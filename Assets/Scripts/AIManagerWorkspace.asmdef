@@ -1,0 +1,19 @@
+{
+    "name": "AIManagerWorkspace",
+    "rootNamespace": "AIManagerWorkspace",
+    "references": [
+        "Unity.XR.Interaction.Toolkit",
+        "Unity.XR.Hands",
+        "Unity.AI.Navigation",
+        "TextMeshPro"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
