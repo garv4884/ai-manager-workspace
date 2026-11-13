@@ -23,11 +23,11 @@ namespace AIManagerWorkspace
         {
             if (panelGroup != null)
             {
-                panelGroup.alpha = 0f;
-                panelGroup.interactable = false;
-                panelGroup.blocksRaycasts = false;
+                panelGroup.alpha = 1f;
+                panelGroup.interactable = true;
+                panelGroup.blocksRaycasts = true;
             }
-            gameObject.SetActive(false);
+            gameObject.SetActive(true);
         }
 
         /// <summary>

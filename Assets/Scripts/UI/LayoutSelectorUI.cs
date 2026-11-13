@@ -131,8 +131,6 @@ namespace AIManagerWorkspace
                 string labelName = (index >= 0 && index < LayoutNames.Length) ? LayoutNames[index] : selectedLayout.ToString();
                 currentLayoutLabel.text = $"Layout: {labelName}";
             }
-
-            StartFade(false);
         }
 
         private void UpdateLayoutLabel()

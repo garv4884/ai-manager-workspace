@@ -18,32 +18,32 @@ namespace AIManagerWorkspace
             // ── 1. Root GameObject ─────────────────────────────────────────────
             var agentGO = new GameObject("AgentNPC");
 
-            // ── 2. Body Visual (capsule placeholder) ───────────────────────────
+            // ── 2. Body Visual (human proportion avatar) ──────────────────────
             var body = GameObject.CreatePrimitive(PrimitiveType.Capsule);
             body.name = "Body";
             body.transform.SetParent(agentGO.transform);
-            body.transform.localPosition = new Vector3(0, 0.9f, 0);
-            body.transform.localScale = new Vector3(0.5f, 0.85f, 0.5f);
+            body.transform.localPosition = new Vector3(0, 0.65f, 0);
+            body.transform.localScale = new Vector3(0.35f, 0.55f, 0.35f);
             SetMaterialURP(body, new Color(0.2f, 0.45f, 0.85f));
 
             // ── 3. Head Visual ─────────────────────────────────────────────────
             var head = GameObject.CreatePrimitive(PrimitiveType.Sphere);
             head.name = "Head";
             head.transform.SetParent(agentGO.transform);
-            head.transform.localPosition = new Vector3(0, 1.85f, 0);
-            head.transform.localScale = Vector3.one * 0.4f;
+            head.transform.localPosition = new Vector3(0, 1.35f, 0);
+            head.transform.localScale = Vector3.one * 0.22f;
             SetMaterialURP(head, new Color(0.92f, 0.78f, 0.65f));
 
             // ── 4. Page Hold Point (where output page floats) ──────────────────
             var pageHold = new GameObject("PageHoldPoint");
             pageHold.transform.SetParent(agentGO.transform);
-            pageHold.transform.localPosition = new Vector3(0.35f, 1.15f, 0.45f);
-            pageHold.transform.localRotation = Quaternion.Euler(15f, -20f, 0);
+            pageHold.transform.localPosition = new Vector3(0.20f, 0.85f, 0.30f);
+            pageHold.transform.localRotation = Quaternion.Euler(15f, -15f, 0);
 
             // ── 5. Status Tag Anchor ───────────────────────────────────────────
             var tagAnchor = new GameObject("StatusTagAnchor");
             tagAnchor.transform.SetParent(agentGO.transform);
-            tagAnchor.transform.localPosition = new Vector3(0, 2.3f, 0);
+            tagAnchor.transform.localPosition = new Vector3(0, 1.58f, 0);
 
             // ── 6. Status Tag UI (World Space Billboard) ───────────────────────
             var tagCanvasGO = new GameObject("StatusTagCanvas");
@@ -56,8 +56,8 @@ namespace AIManagerWorkspace
             tagCanvasGO.AddComponent<GraphicRaycaster>();
 
             var tagRect = tagCanvasGO.GetComponent<RectTransform>();
-            tagRect.sizeDelta = new Vector2(320, 120);
-            tagRect.localScale = Vector3.one * 0.003f;
+            tagRect.sizeDelta = new Vector2(240, 80);
+            tagRect.localScale = Vector3.one * 0.0011f;
 
             // Background
             var bgGO = new GameObject("Background");
@@ -145,8 +145,8 @@ namespace AIManagerWorkspace
             pageGO.AddComponent<GraphicRaycaster>();
 
             var pageRect = pageGO.GetComponent<RectTransform>();
-            pageRect.sizeDelta = new Vector2(400, 520);
-            pageRect.localScale = Vector3.one * 0.0012f;
+            pageRect.sizeDelta = new Vector2(280, 396);
+            pageRect.localScale = Vector3.one * 0.00075f;
 
             // Paper Background
             var paperBgGO = new GameObject("PaperBackground");
@@ -239,17 +239,17 @@ namespace AIManagerWorkspace
 
             // ── 8. Navigation & Interaction Components ─────────────────────────
             var nav = agentGO.AddComponent<NavMeshAgent>();
-            nav.height = 2f;
-            nav.radius = 0.35f;
-            nav.speed = 2.5f;
+            nav.height = 1.55f;
+            nav.radius = 0.22f;
+            nav.speed = 2.2f;
             nav.angularSpeed = 240f;
             nav.acceleration = 8f;
             nav.stoppingDistance = 0.3f;
 
             var col = agentGO.AddComponent<CapsuleCollider>();
-            col.height = 2f;
-            col.radius = 0.35f;
-            col.center = new Vector3(0, 1f, 0);
+            col.height = 1.55f;
+            col.radius = 0.22f;
+            col.center = new Vector3(0, 0.775f, 0);
 
             // AgentController
             var controller = agentGO.AddComponent<AgentController>();

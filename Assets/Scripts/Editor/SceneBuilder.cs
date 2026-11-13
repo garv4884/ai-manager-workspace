@@ -41,6 +41,7 @@ namespace AIManagerWorkspace
                 new Vector3(0, -0.05f, 6f), new Vector3(26f, 0.1f, 24f));
             floor.transform.SetParent(envRoot.transform);
             SetURPMaterial(floor, new Color(0.12f, 0.14f, 0.18f)); // Dark sleek slate
+            floor.AddComponent<UnityEngine.XR.Interaction.Toolkit.Locomotion.Teleportation.TeleportationArea>();
 
             // Boundary Walls (aesthetic office studio)
             var wallBack = CreateWall("WallBack", new Vector3(0, 2.5f, 18f), new Vector3(26f, 5f, 0.3f), new Color(0.08f, 0.09f, 0.12f));
@@ -56,32 +57,33 @@ namespace AIManagerWorkspace
             var platformRoot = new GameObject("ManagerPlatform");
             platformRoot.transform.position = new Vector3(0, 0, -2f);
 
-            // Podium floor (elevated 0.6m)
+            // Podium floor (elevated 0.40m)
             var podium = CreatePrimitive(PrimitiveType.Cube, "PodiumFloor",
-                new Vector3(0, 0.3f, -2f), new Vector3(5f, 0.6f, 3.5f));
+                new Vector3(0, 0.20f, -1.8f), new Vector3(4.5f, 0.40f, 3.0f));
             podium.transform.SetParent(platformRoot.transform);
             SetURPMaterial(podium, new Color(0.06f, 0.07f, 0.10f));
+            podium.AddComponent<UnityEngine.XR.Interaction.Toolkit.Locomotion.Teleportation.TeleportationArea>();
 
             // Steps leading up to podium
             var step1 = CreatePrimitive(PrimitiveType.Cube, "Step1",
-                new Vector3(0, 0.1f, -0.1f), new Vector3(4f, 0.2f, 0.5f));
+                new Vector3(0, 0.10f, -0.20f), new Vector3(3.2f, 0.20f, 0.25f));
             step1.transform.SetParent(platformRoot.transform);
             SetURPMaterial(step1, new Color(0.1f, 0.11f, 0.15f));
 
             var step2 = CreatePrimitive(PrimitiveType.Cube, "Step2",
-                new Vector3(0, 0.3f, -0.6f), new Vector3(4f, 0.2f, 0.5f));
+                new Vector3(0, 0.20f, -0.38f), new Vector3(3.0f, 0.20f, 0.20f));
             step2.transform.SetParent(platformRoot.transform);
             SetURPMaterial(step2, new Color(0.1f, 0.11f, 0.15f));
 
-            // Executive Manager Desk
+            // Executive Manager Desk (desk surface at y = 0.40 + 0.74 = 1.14m)
             var managerDesk = CreatePrimitive(PrimitiveType.Cube, "ManagerDesk",
-                new Vector3(0, 0.82f, -1.25f), new Vector3(2.8f, 0.08f, 1.1f));
+                new Vector3(0, 1.115f, -1.15f), new Vector3(2.2f, 0.05f, 0.85f));
             managerDesk.transform.SetParent(platformRoot.transform);
             SetURPMaterial(managerDesk, new Color(0.18f, 0.14f, 0.10f)); // Rich dark walnut wood
 
             // Desk front modesty panel
             var modestyPanel = CreatePrimitive(PrimitiveType.Cube, "DeskFrontPanel",
-                new Vector3(0, 0.60f, -0.72f), new Vector3(2.6f, 0.45f, 0.04f));
+                new Vector3(0, 0.76f, -0.73f), new Vector3(2.0f, 0.65f, 0.03f));
             modestyPanel.transform.SetParent(managerDesk.transform);
             SetURPMaterial(modestyPanel, new Color(0.08f, 0.09f, 0.12f));
 
@@ -117,7 +119,7 @@ namespace AIManagerWorkspace
             if (xrOrigin != null)
             {
                 // Position XR Origin directly on the manager podium overlooking the workspace
-                xrOrigin.transform.position = new Vector3(0, 0.6f, -2.1f);
+                xrOrigin.transform.position = new Vector3(0, 0.40f, -1.75f);
                 xrOrigin.transform.rotation = Quaternion.identity;
             }
 
@@ -126,10 +128,10 @@ namespace AIManagerWorkspace
             queueRoot.transform.position = Vector3.zero;
 
             Vector3[] queuePositions = {
-                new Vector3(0, 0, 2.0f),
-                new Vector3(0, 0, 3.5f),
-                new Vector3(0, 0, 5.0f),
-                new Vector3(0, 0, 6.5f)
+                new Vector3(0, 0, 1.6f),
+                new Vector3(0, 0, 2.8f),
+                new Vector3(0, 0, 4.0f),
+                new Vector3(0, 0, 5.2f)
             };
 
             Transform[] queueSlotTransforms = new Transform[queuePositions.Length];
@@ -142,18 +144,18 @@ namespace AIManagerWorkspace
 
                 // Visual ground marker cylinder
                 var marker = CreatePrimitive(PrimitiveType.Cylinder, $"SlotMarker_{i + 1}",
-                    queuePositions[i] + Vector3.down * 0.04f, new Vector3(0.5f, 0.02f, 0.5f));
+                    queuePositions[i] + Vector3.up * 0.015f, new Vector3(0.5f, 0.02f, 0.5f));
                 marker.transform.SetParent(slot.transform);
                 SetURPMaterialEmissive(marker, new Color(1.0f, 0.75f, 0.1f), 1.2f); // Amber glow ring
             }
 
-            // Manager Presentation Point (directly in front of manager desk)
+            // Manager Presentation Point (directly in front of manager desk on the floor)
             var presentSlot = new GameObject("PresentingPosition");
-            presentSlot.transform.position = new Vector3(0, 0.6f, 0.35f);
+            presentSlot.transform.position = new Vector3(0, 0f, 0.35f);
             presentSlot.transform.SetParent(queueRoot.transform);
 
             var presentMarker = CreatePrimitive(PrimitiveType.Cylinder, "PresentMarker",
-                new Vector3(0, 0.58f, 0.35f), new Vector3(0.6f, 0.02f, 0.6f));
+                new Vector3(0, 0.015f, 0.35f), new Vector3(0.6f, 0.02f, 0.6f));
             presentMarker.transform.SetParent(presentSlot.transform);
             SetURPMaterialEmissive(presentMarker, new Color(0.1f, 0.95f, 0.65f), 1.8f); // Emerald/Cyan glow
 
@@ -179,47 +181,47 @@ namespace AIManagerWorkspace
                 deskGO.transform.SetParent(desksRoot.transform);
                 deskTransforms[i] = deskGO.transform;
 
-                // Desk Surface
+                // Desk Surface (Standard 0.74m desk height)
                 var surface = CreatePrimitive(PrimitiveType.Cube, "DeskSurface",
-                    deskPositions[i] + new Vector3(0, 0.45f, 0), new Vector3(1.5f, 0.06f, 0.9f));
+                    deskPositions[i] + new Vector3(0, 0.715f, 0), new Vector3(1.4f, 0.05f, 0.8f));
                 surface.transform.SetParent(deskGO.transform);
                 SetURPMaterial(surface, new Color(0.22f, 0.24f, 0.28f));
 
-                // 4 Desk Legs
-                float[] legX = { -0.65f, 0.65f };
-                float[] legZ = { -0.35f, 0.35f };
+                // 4 Desk Legs (height 0.70m)
+                float[] legX = { -0.62f, 0.62f };
+                float[] legZ = { -0.32f, 0.32f };
                 for (int lx = 0; lx < 2; lx++)
                 {
                     for (int lz = 0; lz < 2; lz++)
                     {
                         var leg = CreatePrimitive(PrimitiveType.Cube, $"Leg_{lx}_{lz}",
-                            deskPositions[i] + new Vector3(legX[lx], 0.225f, legZ[lz]), new Vector3(0.06f, 0.45f, 0.06f));
+                            deskPositions[i] + new Vector3(legX[lx], 0.35f, legZ[lz]), new Vector3(0.05f, 0.70f, 0.05f));
                         leg.transform.SetParent(deskGO.transform);
                         SetURPMaterial(leg, new Color(0.12f, 0.12f, 0.14f));
                     }
                 }
 
-                // Dual Monitors
+                // Dual Monitors (elevated to eye level at desk)
                 var monitorL = CreatePrimitive(PrimitiveType.Cube, "MonitorLeft",
-                    deskPositions[i] + new Vector3(-0.35f, 0.85f, -0.32f), new Vector3(0.65f, 0.42f, 0.04f));
+                    deskPositions[i] + new Vector3(-0.32f, 1.05f, -0.28f), new Vector3(0.55f, 0.35f, 0.03f));
                 monitorL.transform.localRotation = Quaternion.Euler(0, 12f, 0);
                 monitorL.transform.SetParent(deskGO.transform);
                 SetURPMaterialEmissive(monitorL, new Color(0.1f, 0.45f, 0.95f), 1.5f); // Code editor blue glow
 
                 var monitorR = CreatePrimitive(PrimitiveType.Cube, "MonitorRight",
-                    deskPositions[i] + new Vector3(0.35f, 0.85f, -0.32f), new Vector3(0.65f, 0.42f, 0.04f));
+                    deskPositions[i] + new Vector3(0.32f, 1.05f, -0.28f), new Vector3(0.55f, 0.35f, 0.03f));
                 monitorR.transform.localRotation = Quaternion.Euler(0, -12f, 0);
                 monitorR.transform.SetParent(deskGO.transform);
                 SetURPMaterialEmissive(monitorR, new Color(0.1f, 0.8f, 0.5f), 1.5f); // Terminal green glow
 
-                // Ergonomic Chair
+                // Ergonomic Chair (Standard chair seat height 0.44m)
                 var chairSeat = CreatePrimitive(PrimitiveType.Cube, "ChairSeat",
-                    deskPositions[i] + new Vector3(0, 0.30f, 0.65f), new Vector3(0.6f, 0.08f, 0.6f));
+                    deskPositions[i] + new Vector3(0, 0.44f, 0.55f), new Vector3(0.48f, 0.06f, 0.48f));
                 chairSeat.transform.SetParent(deskGO.transform);
                 SetURPMaterial(chairSeat, new Color(0.15f, 0.16f, 0.20f));
 
                 var chairBack = CreatePrimitive(PrimitiveType.Cube, "ChairBack",
-                    deskPositions[i] + new Vector3(0, 0.68f, 0.92f), new Vector3(0.55f, 0.70f, 0.06f));
+                    deskPositions[i] + new Vector3(0, 0.78f, 0.76f), new Vector3(0.45f, 0.60f, 0.05f));
                 chairBack.transform.SetParent(deskGO.transform);
                 SetURPMaterial(chairBack, new Color(0.15f, 0.16f, 0.20f));
             }
@@ -376,9 +378,9 @@ namespace AIManagerWorkspace
         {
             var panelGO = new GameObject("LayoutSelectorPanel");
             panelGO.transform.SetParent(parent);
-            // Angled on the left of manager's desk
-            panelGO.transform.position = new Vector3(-1.18f, 1.15f, -1.25f);
-            panelGO.transform.rotation = Quaternion.Euler(15f, 25f, 0);
+            // Angled on the left of manager's desk (ergonomic compact console)
+            panelGO.transform.position = new Vector3(-0.75f, 1.30f, -0.92f);
+            panelGO.transform.rotation = Quaternion.Euler(12f, 22f, 0);
 
             var canvas = panelGO.AddComponent<Canvas>();
             canvas.renderMode = RenderMode.WorldSpace;
@@ -388,8 +390,8 @@ namespace AIManagerWorkspace
             var group = panelGO.AddComponent<CanvasGroup>();
 
             var rt = panelGO.GetComponent<RectTransform>();
-            rt.sizeDelta = new Vector2(420, 390);
-            rt.localScale = Vector3.one * 0.0014f;
+            rt.sizeDelta = new Vector2(320, 320);
+            rt.localScale = Vector3.one * 0.00085f;
 
             // Background
             var bgGO = new GameObject("Background");
@@ -521,9 +523,9 @@ namespace AIManagerWorkspace
         {
             var panelGO = new GameObject("AgentDetailPanel");
             panelGO.transform.SetParent(parent);
-            // Angled on the right of manager's desk
-            panelGO.transform.position = new Vector3(1.18f, 1.15f, -1.25f);
-            panelGO.transform.rotation = Quaternion.Euler(15f, -25f, 0);
+            // Angled on the right of manager's desk (ergonomic compact console)
+            panelGO.transform.position = new Vector3(0.75f, 1.30f, -0.92f);
+            panelGO.transform.rotation = Quaternion.Euler(12f, -22f, 0);
 
             var canvas = panelGO.AddComponent<Canvas>();
             canvas.renderMode = RenderMode.WorldSpace;
@@ -533,8 +535,8 @@ namespace AIManagerWorkspace
             var group = panelGO.AddComponent<CanvasGroup>();
 
             var rt = panelGO.GetComponent<RectTransform>();
-            rt.sizeDelta = new Vector2(440, 360);
-            rt.localScale = Vector3.one * 0.0014f;
+            rt.sizeDelta = new Vector2(340, 260);
+            rt.localScale = Vector3.one * 0.00085f;
 
             // Background
             var bgGO = new GameObject("Background");
@@ -643,8 +645,9 @@ namespace AIManagerWorkspace
         {
             var kbGO = new GameObject("VirtualKeyboard");
             kbGO.transform.SetParent(parent);
-            kbGO.transform.position = new Vector3(0, 0.95f, -1.05f);
-            kbGO.transform.rotation = Quaternion.Euler(30f, 0, 0);
+            // Resting ergonomically right in front of manager above desk surface
+            kbGO.transform.position = new Vector3(0, 1.18f, -0.85f);
+            kbGO.transform.rotation = Quaternion.Euler(22f, 0, 0);
 
             var canvas = kbGO.AddComponent<Canvas>();
             canvas.renderMode = RenderMode.WorldSpace;
@@ -653,8 +656,8 @@ namespace AIManagerWorkspace
             kbGO.AddComponent<UnityEngine.XR.Interaction.Toolkit.UI.TrackedDeviceGraphicRaycaster>();
 
             var rt = kbGO.GetComponent<RectTransform>();
-            rt.sizeDelta = new Vector2(480, 180);
-            rt.localScale = Vector3.one * 0.0012f;
+            rt.sizeDelta = new Vector2(400, 140);
+            rt.localScale = Vector3.one * 0.00080f;
 
             var previewGO = new GameObject("PreviewText");
             previewGO.transform.SetParent(kbGO.transform);

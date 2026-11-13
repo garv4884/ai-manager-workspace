@@ -238,17 +238,19 @@ namespace AIManagerWorkspace
             switch (data.currentStatus)
             {
                 case AgentStatus.Walking:
-                    // Arrived at desk — just stand idle
+                    // Arrived at desk — face monitors and stand ready
+                    FaceDesk();
                     SetStatus(AgentStatus.Free);
                     break;
 
                 case AgentStatus.InQueue:
-                    // Arrived at queue slot — wait there
+                    // Arrived at queue slot — face forward towards manager
+                    FaceManager();
                     break;
 
                 case AgentStatus.Presenting:
-                    // Arrived at manager desk — face manager
-                    FaceTarget(managerPresentTransform);
+                    // Arrived at manager desk — face manager directly
+                    FaceManager();
                     break;
 
                 default:
@@ -284,13 +286,21 @@ namespace AIManagerWorkspace
                 outputPage.gameObject.SetActive(false);
         }
 
-        private void FaceTarget(Transform target)
+        private void FaceManager()
         {
-            if (target == null) return;
-            Vector3 dir = (target.position - transform.position);
+            Vector3 managerPos = new Vector3(0, 0.6f, -1.25f);
+            Vector3 dir = (managerPos - transform.position);
             dir.y = 0f;
             if (dir.sqrMagnitude > 0.001f)
                 transform.rotation = Quaternion.LookRotation(dir);
+            else
+                transform.rotation = Quaternion.LookRotation(Vector3.back);
+        }
+
+        private void FaceDesk()
+        {
+            if (assignedDeskTransform != null)
+                transform.rotation = assignedDeskTransform.rotation;
         }
 
         private void ReturnToDesk() => MoveToDesk();
