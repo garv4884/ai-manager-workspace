@@ -38,6 +38,16 @@ namespace AIManagerWorkspace
         public DateTime createdAt;
         public DateTime completedAt;
 
+        public TaskData()
+        {
+            taskId = Guid.NewGuid().ToString("N")[..8];
+            status = TaskExecutionStatus.Pending;
+            progress = 0f;
+            createdAt = DateTime.UtcNow;
+            userInput = string.Empty;
+            outputResult = string.Empty;
+        }
+
         public TaskData(string title, string description, TaskType type)
         {
             taskId = Guid.NewGuid().ToString("N")[..8];

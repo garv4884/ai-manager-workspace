@@ -83,7 +83,7 @@ namespace AIManagerWorkspace
         /// </summary>
         private T FindOrCreate<T>(string goName) where T : Component
         {
-            T existing = FindFirstObjectByType<T>();
+            T existing = FindAnyObjectByType<T>();
             if (existing != null)
                 return existing;
 

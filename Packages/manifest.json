@@ -1,21 +1,14 @@
 {
-  "scopedRegistries": [
-    {
-      "name": "Meta XR SDK",
-      "url": "https://npm.developer.oculus.com",
-      "scopes": [
-        "com.meta.xr"
-      ]
-    }
-  ],
+  "scopedRegistries": [],
   "dependencies": {
-    "com.meta.xr.sdk.all": "209.0",
-    "com.unity.ai.navigation": "2.0.9",
+    "com.meta.xr.sdk.all": "209.0.0",
+    "com.unity.ai.navigation": "2.0.16",
     "com.unity.feature.development": "1.0.2",
     "com.unity.ide.rider": "3.0.39",
     "com.unity.inputsystem": "1.19.0",
     "com.unity.learn.iet-framework": "5.0.3",
     "com.unity.multiplayer.center": "1.0.1",
+    "com.unity.pipeline": "1.0.0",
     "com.unity.render-pipelines.universal": "17.4.0",
     "com.unity.timeline": "1.8.12",
     "com.unity.xr.androidxr-openxr": "1.2.0",
@@ -25,7 +18,7 @@
     "com.unity.xr.hands": "1.7.3",
     "com.unity.xr.interaction.toolkit": "3.4.1",
     "com.unity.xr.management": "4.5.4",
-    "com.unity.xr.meta-openxr": "2.5.0",
+    "com.unity.xr.meta-openxr": "2.5.1",
     "com.unity.xr.openxr": "1.16.1",
     "com.unity.modules.accessibility": "1.0.0",
     "com.unity.modules.adaptiveperformance": "1.0.0",
@@ -60,7 +53,6 @@
     "com.unity.modules.video": "1.0.0",
     "com.unity.modules.vr": "1.0.0",
     "com.unity.modules.wind": "1.0.0",
-    "com.unity.modules.xr": "1.0.0",
-    "com.unity.pipeline": "1.0.0"
+    "com.unity.modules.xr": "1.0.0"
   }
 }

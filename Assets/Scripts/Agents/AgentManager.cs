@@ -19,6 +19,7 @@ namespace AIManagerWorkspace
 
         [Header("Dependencies")]
         [SerializeField] private QueueManager queueManager;
+        [SerializeField] private AgentDetailPanel agentDetailPanel;
 
         // ─── Private State ────────────────────────────────────────────────────
         private List<AgentController> agents = new List<AgentController>();
@@ -191,6 +192,25 @@ namespace AIManagerWorkspace
                 if (d < bestDist) { bestDist = d; nearest = desk; }
             }
             return nearest;
+        }
+
+        // ─── Detail Panel ─────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Opens the AgentDetailPanel for the given agent.
+        /// Called by GestureInteractionManager when an agent is pinched/selected.
+        /// </summary>
+        public void ShowAgentDetailPanel(AgentController agent)
+        {
+            if (agent == null) return;
+
+            if (agentDetailPanel == null)
+            {
+                Debug.LogWarning("[AgentManager] agentDetailPanel is not assigned; cannot show detail panel.");
+                return;
+            }
+
+            agentDetailPanel.ShowForAgent(agent);
         }
     }
 }

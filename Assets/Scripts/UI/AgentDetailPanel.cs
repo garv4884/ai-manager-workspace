@@ -19,19 +19,6 @@ namespace AIManagerWorkspace
         private AgentController trackedAgent;
         private Coroutine activeFade;
 
-        private static readonly Color[] StatusColors = new Color[]
-        {
-            Color.green,         // Free
-            Color.yellow,        // Working
-            new Color(1f, 0.5f, 0f), // WaitingForApproval (orange)
-            Color.cyan,          // WaitingForInput
-            Color.blue,          // InQueue
-            Color.magenta,       // Presenting
-            Color.gray,          // Walking
-            Color.red,           // Rejected
-            Color.white          // Completed / default
-        };
-
         private void Awake()
         {
             if (panelGroup != null)
@@ -51,7 +38,7 @@ namespace AIManagerWorkspace
             if (agent == null) return;
 
             trackedAgent = agent;
-            PopulateFields(agent.data);
+            PopulateFields(agent.Data, agent.CurrentTask);
 
             gameObject.SetActive(true);
 
@@ -86,10 +73,10 @@ namespace AIManagerWorkspace
                 Hide();
                 return;
             }
-            PopulateFields(trackedAgent.data);
+            PopulateFields(trackedAgent.Data, trackedAgent.CurrentTask);
         }
 
-        private void PopulateFields(AgentData data)
+        private void PopulateFields(AgentData data, TaskData task)
         {
             if (data == null) return;
 
@@ -97,32 +84,33 @@ namespace AIManagerWorkspace
                 nameText.text = data.agentName;
 
             if (roleText != null)
-                roleText.text = data.role;
+                roleText.text = data.agentRole;
 
             if (statusText != null)
-                statusText.text = data.currentStatus.ToString();
+                statusText.text = data.GetStatusDisplayString();
 
             if (taskDescText != null)
-                taskDescText.text = data.currentTask != null ? data.currentTask.description : "—";
+                taskDescText.text = task != null ? task.description : (!string.IsNullOrEmpty(data.currentTaskDescription) ? data.currentTaskDescription : "â€”");
 
             if (outputPreviewText != null)
-                outputPreviewText.text = data.currentTask != null && !string.IsNullOrEmpty(data.currentTask.output)
-                    ? TruncateOutput(data.currentTask.output, 200)
-                    : "No output yet.";
+            {
+                string outStr = task != null && !string.IsNullOrEmpty(task.outputResult)
+                    ? task.outputResult
+                    : (!string.IsNullOrEmpty(data.currentOutput) ? data.currentOutput : "No output yet.");
+                outputPreviewText.text = TruncateOutput(outStr, 200);
+            }
 
             if (statusColorBar != null)
             {
-                int statusIndex = (int)data.currentStatus;
-                statusColorBar.color = (statusIndex >= 0 && statusIndex < StatusColors.Length)
-                    ? StatusColors[statusIndex]
-                    : Color.white;
+                statusColorBar.color = data.GetStatusColor();
             }
         }
 
         private string TruncateOutput(string text, int maxLength)
         {
+            if (string.IsNullOrEmpty(text)) return string.Empty;
             if (text.Length <= maxLength) return text;
-            return text.Substring(0, maxLength) + "…";
+            return text.Substring(0, maxLength) + "â€¦";
         }
 
         private IEnumerator FadeIn()

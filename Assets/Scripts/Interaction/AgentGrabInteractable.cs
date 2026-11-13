@@ -5,7 +5,7 @@ using UnityEngine.XR.Interaction.Toolkit;
 namespace AIManagerWorkspace
 {
     [RequireComponent(typeof(NavMeshAgent))]
-    public class AgentGrabInteractable : XRGrabInteractable
+    public class AgentGrabInteractable : UnityEngine.XR.Interaction.Toolkit.Interactables.XRGrabInteractable
     {
         [SerializeField] private AgentController agentController;
         [SerializeField] private AgentManager agentManager;

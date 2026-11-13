@@ -79,6 +79,12 @@ namespace AIManagerWorkspace
                 transform.position = targetFollow.position + heightOffset;
             }
 
+            // Smoothly lerp indicator dot to target status color
+            if (statusIndicatorDot != null)
+            {
+                statusIndicatorDot.color = Color.Lerp(statusIndicatorDot.color, targetStatusColor, Time.deltaTime * colorLerpSpeed);
+            }
+
             // Billboard towards player camera
             if (billboardToCamera)
             {

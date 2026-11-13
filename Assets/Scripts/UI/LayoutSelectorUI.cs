@@ -18,7 +18,7 @@ namespace AIManagerWorkspace
 
         private static readonly string[] LayoutNames = new string[]
         {
-            "Grid", "Circle", "U-Shape", "Row", "Cluster", "Open"
+            "Grid", "Circle", "U-Shape", "Hub & Spoke", "Coworking", "War Room"
         };
 
         private void Start()
@@ -31,16 +31,16 @@ namespace AIManagerWorkspace
                     layoutButtons[i].onClick.AddListener(() => OnLayoutButtonPressed(index));
             }
 
-            // Initialize panel state
+            // Initialize panel state: visible by default as an in-world desk console
             if (panelGroup != null)
             {
-                panelGroup.alpha = 0f;
-                panelGroup.interactable = false;
-                panelGroup.blocksRaycasts = false;
+                panelGroup.alpha = 1f;
+                panelGroup.interactable = true;
+                panelGroup.blocksRaycasts = true;
             }
 
-            gameObject.SetActive(false);
-            isVisible = false;
+            gameObject.SetActive(true);
+            isVisible = true;
 
             UpdateLayoutLabel();
         }

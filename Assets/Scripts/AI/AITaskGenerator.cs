@@ -85,12 +85,12 @@ namespace AIManagerWorkspace
 
             if (agent.CurrentTask != null)
             {
-                agent.CurrentTask.output = response;
+                agent.CurrentTask.outputResult = response;
                 Debug.Log($"[AITaskGenerator] Updated task output for agent {agentId}.");
             }
 
             // If agent is in a waiting state, re-enter presentation flow
-            AgentStatus status = agent.data.currentStatus;
+            AgentStatus status = agent.Data.currentStatus;
             if (status == AgentStatus.WaitingForApproval || status == AgentStatus.WaitingForInput)
             {
                 agent.MoveToManager();
@@ -99,13 +99,7 @@ namespace AIManagerWorkspace
 
         public TaskData CreateTask(string title, string desc, TaskType type)
         {
-            return new TaskData
-            {
-                title = title,
-                description = desc,
-                type = type,
-                id = System.Guid.NewGuid().ToString()
-            };
+            return new TaskData(title, desc, type);
         }
     }
 }

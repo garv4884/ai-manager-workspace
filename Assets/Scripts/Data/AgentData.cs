@@ -28,6 +28,14 @@ namespace AIManagerWorkspace
         public string currentOutput;
         public int deskIndex = -1;
 
+        public AgentData()
+        {
+            agentId = System.Guid.NewGuid().ToString();
+            currentStatus = AgentStatus.Free;
+            currentTaskDescription = "Awaiting assignment";
+            currentOutput = string.Empty;
+        }
+
         public AgentData(string id, string name, string role, int desk = -1)
         {
             agentId = id;

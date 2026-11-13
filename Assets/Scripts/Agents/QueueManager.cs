@@ -28,6 +28,9 @@ namespace AIManagerWorkspace
         /// <summary>Returns the agent currently presenting to the manager.</summary>
         public AgentController GetCurrentPresenter() => currentPresenter;
 
+        /// <summary>Property alias for the current presenter (used by GestureInteractionManager).</summary>
+        public AgentController CurrentPresenter => currentPresenter;
+
         /// <summary>Returns the number of agents waiting in the queue (excluding the presenter).</summary>
         public int GetQueueLength() => waitingQueue.Count;
 

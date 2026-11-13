@@ -5,7 +5,9 @@
         "Unity.XR.Interaction.Toolkit",
         "Unity.XR.Hands",
         "Unity.AI.Navigation",
-        "TextMeshPro"
+        "Unity.TextMeshPro",
+        "UnityEngine.UI",
+        "Unity.InputSystem"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

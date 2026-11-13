@@ -35,6 +35,7 @@ namespace AIManagerWorkspace
 
         // ─── Properties ───────────────────────────────────────────────────────
         public AgentData Data => data;
+        public TaskData CurrentTask => currentTask;
 
         // ─── Unity Lifecycle ──────────────────────────────────────────────────
 

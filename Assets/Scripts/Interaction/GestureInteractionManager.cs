@@ -18,6 +18,7 @@ namespace AIManagerWorkspace
         [SerializeField] private QueueManager         queueManager;
         [SerializeField] private AgentManager         agentManager;
         [SerializeField] private OutputPageRenderer   outputPagePrefab;
+        [SerializeField] private AgentDetailPanel     agentDetailPanel;
 
         [Header("Approval Feedback")]
         [SerializeField] private AudioSource   approvalSound;
@@ -149,13 +150,14 @@ namespace AIManagerWorkspace
 
         private void TryShowAgentDetail(GameObject obj)
         {
-            if (agentManager == null) return;
-
             AgentController agent = obj.GetComponentInParent<AgentController>();
             if (agent == null) return;
 
-            // Delegate to AgentManager to open the detail panel
-            agentManager.ShowAgentDetailPanel(agent);
+            // Show detail panel if one is wired up, otherwise log
+            if (agentDetailPanel != null)
+                agentDetailPanel.ShowForAgent(agent);
+            else
+                Debug.Log($"[GestureInteractionManager] Pinch on agent: {agent.Data?.agentName}");
         }
     }
 }
