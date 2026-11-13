@@ -37,6 +37,35 @@ namespace AIManagerWorkspace
         {
             if (gestureRecognizer == null)
                 gestureRecognizer = GetComponent<HandGestureRecognizer>();
+
+            if (approvalSound == null)
+            {
+                approvalSound = gameObject.AddComponent<AudioSource>();
+                approvalSound.playOnAwake = false;
+                approvalSound.clip = CreateTone(880f, 0.4f, "ApprovalChime");
+            }
+            if (rejectionSound == null)
+            {
+                rejectionSound = gameObject.AddComponent<AudioSource>();
+                rejectionSound.playOnAwake = false;
+                rejectionSound.clip = CreateTone(330f, 0.35f, "RejectionTone");
+            }
+        }
+
+        private static AudioClip CreateTone(float frequency, float length, string name)
+        {
+            int rate = 44100;
+            int count = (int)(rate * length);
+            float[] data = new float[count];
+            for (int i = 0; i < count; i++)
+            {
+                float t = (float)i / rate;
+                float env = Mathf.Exp(-4f * t);
+                data[i] = Mathf.Sin(2f * Mathf.PI * frequency * t) * env * 0.35f;
+            }
+            var clip = AudioClip.Create(name, count, 1, rate, false);
+            clip.SetData(data, 0);
+            return clip;
         }
 
         private void OnEnable()

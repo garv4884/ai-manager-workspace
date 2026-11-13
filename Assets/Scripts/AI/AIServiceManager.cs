@@ -33,6 +33,53 @@ namespace AIManagerWorkspace
         /// <summary>Fired when a request fails. (agentId, errorMessage)</summary>
         public event Action<string, string> OnRequestError;
 
+        [Serializable]
+        private class ConfigData
+        {
+            public string provider;
+            public string apiKey;
+            public string model;
+        }
+
+        private void Start()
+        {
+            LoadConfigFromStreamingAssets();
+        }
+
+        public void LoadConfigFromStreamingAssets()
+        {
+            string configPath = System.IO.Path.Combine(Application.streamingAssetsPath, "config.json");
+            if (System.IO.File.Exists(configPath))
+            {
+                try
+                {
+                    string json = System.IO.File.ReadAllText(configPath);
+                    var config = JsonUtility.FromJson<ConfigData>(json);
+                    if (config != null)
+                    {
+                        if (!string.IsNullOrEmpty(config.apiKey))
+                        {
+                            apiKey = config.apiKey.Trim();
+                            Debug.Log("[AIServiceManager] Loaded API key from StreamingAssets/config.json");
+                        }
+                        if (!string.IsNullOrEmpty(config.provider))
+                        {
+                            if (Enum.TryParse<AIProvider>(config.provider, true, out var prov))
+                                SetProvider(prov);
+                        }
+                        if (!string.IsNullOrEmpty(config.model))
+                        {
+                            defaultModel = config.model;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[AIServiceManager] Could not read config.json: {ex.Message}");
+                }
+            }
+        }
+
         // ── Public API ────────────────────────────────────────────────────────
 
         /// <summary>Sets the API key used for all subsequent requests.</summary>

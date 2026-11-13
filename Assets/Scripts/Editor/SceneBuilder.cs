@@ -258,9 +258,25 @@ namespace AIManagerWorkspace
             var keyboardGO = CreateVirtualKeyboard(uiRoot.transform);
             var keyboardManager = keyboardGO.GetComponent<VirtualKeyboardManager>();
 
+            // 9D. XR Event System (enables Hand Rays, Pokes, and Controllers to interact with UI)
+            var esGO = new GameObject("EventSystem");
+            esGO.AddComponent<UnityEngine.EventSystems.EventSystem>();
+            esGO.AddComponent<UnityEngine.XR.Interaction.Toolkit.UI.XRUIInputModule>();
+
             // ── 10. Core Systems Setup & Wiring ────────────────────────────────
             var gmGO = new GameObject("GameManager");
             var gameManager = gmGO.AddComponent<GameManager>();
+
+            // PassthroughToggle (MR / VR switcher)
+            var passthrough = gmGO.AddComponent<PassthroughToggle>();
+            var ptSO = new SerializedObject(passthrough);
+            ptSO.FindProperty("environmentRoot").objectReferenceValue = envRoot;
+            if (xrOrigin != null)
+            {
+                var cam = xrOrigin.GetComponentInChildren<Camera>();
+                if (cam != null) ptSO.FindProperty("xrCamera").objectReferenceValue = cam;
+            }
+            ptSO.ApplyModifiedProperties();
 
             // QueueManager
             var queueGO = new GameObject("QueueManager");
@@ -294,7 +310,6 @@ namespace AIManagerWorkspace
             var layoutMgrGO = new GameObject("WorkspaceLayoutManager");
             layoutMgrGO.transform.SetParent(gmGO.transform);
             var layoutManager = layoutMgrGO.AddComponent<WorkspaceLayoutManager>();
-            layoutMgrGO.AddComponent<NavMeshSurface>();
             var layoutSO = new SerializedObject(layoutManager);
             var layoutDeskArr = layoutSO.FindProperty("deskTransforms");
             layoutDeskArr.arraySize = deskTransforms.Length;
@@ -302,6 +317,7 @@ namespace AIManagerWorkspace
                 layoutDeskArr.GetArrayElementAtIndex(ld).objectReferenceValue = deskTransforms[ld];
             layoutSO.FindProperty("managerPlatformTransform").objectReferenceValue = platformRoot.transform;
             layoutSO.FindProperty("agentManager").objectReferenceValue = agentManager;
+            layoutSO.FindProperty("navMeshSurface").objectReferenceValue = navSurface;
             layoutSO.ApplyModifiedProperties();
 
             // Wire LayoutSelectorUI to WorkspaceLayoutManager
@@ -368,10 +384,11 @@ namespace AIManagerWorkspace
             canvas.renderMode = RenderMode.WorldSpace;
             panelGO.AddComponent<CanvasScaler>();
             panelGO.AddComponent<GraphicRaycaster>();
+            panelGO.AddComponent<UnityEngine.XR.Interaction.Toolkit.UI.TrackedDeviceGraphicRaycaster>();
             var group = panelGO.AddComponent<CanvasGroup>();
 
             var rt = panelGO.GetComponent<RectTransform>();
-            rt.sizeDelta = new Vector2(420, 320);
+            rt.sizeDelta = new Vector2(420, 390);
             rt.localScale = Vector3.one * 0.0014f;
 
             // Background
@@ -395,7 +412,7 @@ namespace AIManagerWorkspace
             titleTmp.alignment = TextAlignmentOptions.Center;
             titleTmp.color = new Color(0.9f, 0.95f, 1.0f);
             var titleRect = titleGO.GetComponent<RectTransform>();
-            titleRect.anchorMin = new Vector2(0, 0.85f);
+            titleRect.anchorMin = new Vector2(0, 0.88f);
             titleRect.anchorMax = Vector2.one;
             titleRect.offsetMin = Vector2.zero;
             titleRect.offsetMax = Vector2.zero;
@@ -409,8 +426,8 @@ namespace AIManagerWorkspace
             curTmp.alignment = TextAlignmentOptions.Center;
             curTmp.color = new Color(0.3f, 0.85f, 0.5f);
             var curRect = curGO.GetComponent<RectTransform>();
-            curRect.anchorMin = new Vector2(0, 0.73f);
-            curRect.anchorMax = new Vector2(1, 0.85f);
+            curRect.anchorMin = new Vector2(0, 0.77f);
+            curRect.anchorMax = new Vector2(1, 0.88f);
             curRect.offsetMin = Vector2.zero;
             curRect.offsetMax = Vector2.zero;
 
@@ -433,8 +450,8 @@ namespace AIManagerWorkspace
                 var btnRect = btnGO.GetComponent<RectTransform>();
                 float xMin = col == 0 ? 0.06f : 0.52f;
                 float xMax = col == 0 ? 0.48f : 0.94f;
-                float yMax = 0.70f - (row * 0.22f);
-                float yMin = yMax - 0.18f;
+                float yMax = 0.75f - (row * 0.18f);
+                float yMin = yMax - 0.15f;
 
                 btnRect.anchorMin = new Vector2(xMin, yMin);
                 btnRect.anchorMax = new Vector2(xMax, yMax);
@@ -454,6 +471,37 @@ namespace AIManagerWorkspace
                 labelRect.offsetMin = Vector2.zero;
                 labelRect.offsetMax = Vector2.zero;
             }
+
+            // 7th Button: Mixed Reality Passthrough Toggle
+            var mrBtnGO = new GameObject("Btn_ToggleMR");
+            mrBtnGO.transform.SetParent(panelGO.transform);
+            var mrBtnImg = mrBtnGO.AddComponent<Image>();
+            mrBtnImg.color = new Color(0.12f, 0.45f, 0.78f);
+            var mrBtn = mrBtnGO.AddComponent<Button>();
+            var mrBtnRect = mrBtnGO.GetComponent<RectTransform>();
+            mrBtnRect.anchorMin = new Vector2(0.06f, 0.03f);
+            mrBtnRect.anchorMax = new Vector2(0.94f, 0.16f);
+            mrBtnRect.offsetMin = Vector2.zero;
+            mrBtnRect.offsetMax = Vector2.zero;
+
+            var mrLabelGO = new GameObject("Text");
+            mrLabelGO.transform.SetParent(mrBtnGO.transform);
+            var mrLabelTmp = mrLabelGO.AddComponent<TextMeshProUGUI>();
+            mrLabelTmp.text = "Toggle Mixed Reality (Passthrough)";
+            mrLabelTmp.fontSize = 14;
+            mrLabelTmp.fontStyle = FontStyles.Bold;
+            mrLabelTmp.alignment = TextAlignmentOptions.Center;
+            mrLabelTmp.color = Color.white;
+            var mrLabelRect = mrLabelGO.GetComponent<RectTransform>();
+            mrLabelRect.anchorMin = Vector2.zero;
+            mrLabelRect.anchorMax = Vector2.one;
+            mrLabelRect.offsetMin = Vector2.zero;
+            mrLabelRect.offsetMax = Vector2.zero;
+
+            mrBtn.onClick.AddListener(() => {
+                var pt = Object.FindAnyObjectByType<PassthroughToggle>();
+                pt?.ToggleMode();
+            });
 
             var layoutUI = panelGO.AddComponent<LayoutSelectorUI>();
             var uiSO = new SerializedObject(layoutUI);
@@ -481,6 +529,7 @@ namespace AIManagerWorkspace
             canvas.renderMode = RenderMode.WorldSpace;
             panelGO.AddComponent<CanvasScaler>();
             panelGO.AddComponent<GraphicRaycaster>();
+            panelGO.AddComponent<UnityEngine.XR.Interaction.Toolkit.UI.TrackedDeviceGraphicRaycaster>();
             var group = panelGO.AddComponent<CanvasGroup>();
 
             var rt = panelGO.GetComponent<RectTransform>();
@@ -601,6 +650,7 @@ namespace AIManagerWorkspace
             canvas.renderMode = RenderMode.WorldSpace;
             kbGO.AddComponent<CanvasScaler>();
             kbGO.AddComponent<GraphicRaycaster>();
+            kbGO.AddComponent<UnityEngine.XR.Interaction.Toolkit.UI.TrackedDeviceGraphicRaycaster>();
 
             var rt = kbGO.GetComponent<RectTransform>();
             rt.sizeDelta = new Vector2(480, 180);

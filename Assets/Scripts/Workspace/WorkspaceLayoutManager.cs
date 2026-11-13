@@ -10,6 +10,7 @@ namespace AIManagerWorkspace
         [SerializeField] private Transform[] deskTransforms;
         [SerializeField] private Transform managerPlatformTransform;
         [SerializeField] private AgentManager agentManager;
+        [SerializeField] private NavMeshSurface navMeshSurface;
         [SerializeField] private float transitionDuration = 1.2f;
         [SerializeField] private float deskSpacing = 2.4f;
         [SerializeField] private float circleRadius = 5.0f;
@@ -81,12 +82,25 @@ namespace AIManagerWorkspace
                 activeDesks[i].rotation = targets[i].rotation;
             }
 
-            // Rebuild NavMesh
-            NavMeshSurface surface = GetComponent<NavMeshSurface>();
-            if (surface != null)
+            // Rebuild NavMesh on floor
+            if (navMeshSurface != null)
             {
-                UnityEngine.AI.NavMesh.RemoveAllNavMeshData();
-                surface.BuildNavMesh();
+                navMeshSurface.BuildNavMesh();
+            }
+            else
+            {
+                var floorSurface = FindAnyObjectByType<NavMeshSurface>();
+                floorSurface?.BuildNavMesh();
+            }
+
+            // Update free agents to move to their newly positioned desks
+            if (agentManager != null)
+            {
+                var freeAgents = agentManager.GetAgentsByStatus(AgentStatus.Free);
+                foreach (var a in freeAgents)
+                {
+                    a.MoveToDesk();
+                }
             }
 
             activeTransition = null;

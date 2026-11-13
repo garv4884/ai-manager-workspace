@@ -1,0 +1,6 @@
+{
+  "provider": "Claude",
+  "apiKey": "",
+  "model": "claude-3-5-sonnet-20241022",
+  "note": "Optional: Enter your Anthropic or OpenAI API key here. If left blank, realistic offline simulation mode runs automatically with zero configuration required."
+}

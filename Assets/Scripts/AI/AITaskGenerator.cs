@@ -54,7 +54,17 @@ namespace AIManagerWorkspace
             TaskType type = (Random.value > 0.5f) ? TaskType.NeedsApproval : TaskType.NeedsTextInput;
 
             TaskData task = CreateTask(description, description, type);
+
+            // Populate rich initial deliverable based on agent persona and task
+            task.outputResult = GenerateRealisticOutput(freeAgent.Data?.agentName ?? "Agent", description);
             freeAgent.AssignTask(task);
+
+            // If real API key is configured, also query live LLM
+            if (aiService != null && !string.IsNullOrEmpty(aiService.apiKey))
+            {
+                string sys = $"You are {freeAgent.Data?.agentName}, an expert {freeAgent.Data?.agentRole} working in a VR office. Provide a concise, high-value professional output in under 120 words.";
+                aiService.SendRequest(freeAgent.Data.agentId, sys, description);
+            }
 
             Debug.Log($"[AITaskGenerator] Assigned demo task '{description}' (type: {type}) to agent {freeAgent.name}");
         }
@@ -69,9 +79,69 @@ namespace AIManagerWorkspace
             }
 
             TaskData task = CreateTask(description, description, type);
+            task.outputResult = GenerateRealisticOutput(freeAgent.Data?.agentName ?? "Agent", description);
             freeAgent.AssignTask(task);
 
+            if (aiService != null && !string.IsNullOrEmpty(aiService.apiKey))
+            {
+                string sys = $"You are {freeAgent.Data?.agentName}, an expert {freeAgent.Data?.agentRole}. Provide a concise professional output in under 120 words.";
+                aiService.SendRequest(freeAgent.Data.agentId, sys, description);
+            }
+
             Debug.Log($"[AITaskGenerator] Assigned task '{description}' (type: {type}) to agent {freeAgent.name}");
+        }
+
+        private string GenerateRealisticOutput(string agentName, string taskDesc)
+        {
+            if (taskDesc.Contains("Python") || taskDesc.Contains("JSON") || agentName.Contains("Claude"))
+            {
+                return "```python\n" +
+                       "import json\n" +
+                       "def parse_payload(raw_str: str) -> dict:\n" +
+                       "    \"\"\"Parses & validates incoming agent payload.\"\"\"\n" +
+                       "    try:\n" +
+                       "        data = json.loads(raw_str)\n" +
+                       "        return {\"status\": \"ok\", \"data\": data}\n" +
+                       "    except json.JSONDecodeError as e:\n" +
+                       "        return {\"status\": \"error\", \"detail\": str(e)}\n" +
+                       "```\n" +
+                       "Status: Lint passed (0 errors, 100% test coverage)";
+            }
+            if (taskDesc.Contains("schema") || taskDesc.Contains("database") || agentName.Contains("Gemini"))
+            {
+                return "Entity-Relationship Draft:\n" +
+                       "• TABLE agents (id UUID PRIMARY KEY, name VARCHAR(64), role VARCHAR(64), status INT);\n" +
+                       "• TABLE tasks (id UUID PRIMARY KEY, agent_id UUID REFERENCES agents, prompt TEXT, output TEXT);\n" +
+                       "• INDEX idx_agent_status ON agents(status);\n" +
+                       "Optimized for sub-10ms query latency.";
+            }
+            if (taskDesc.Contains("VR UI") || taskDesc.Contains("Research") || agentName.Contains("GPT-4"))
+            {
+                return "Key Research Takeaways for Spatial UI:\n" +
+                       "1. Focal Distance: 1.2m–1.5m prevents vergence-accommodation conflict.\n" +
+                       "2. Target Angular Size: 1.5° minimum for hand-ray accuracy.\n" +
+                       "3. Passive Affordance: 3D elevation + subtle shadow under active cards.\n" +
+                       "Recommendation: Proceed with floating curved slate design.";
+            }
+            if (taskDesc.Contains("unit tests") || taskDesc.Contains("payment") || agentName.Contains("Copilot"))
+            {
+                return "PaymentModule Test Results:\n" +
+                       "✓ Test_AuthTokenValidation: PASSED (14ms)\n" +
+                       "✓ Test_RejectionUnderInsufficientBalance: PASSED (9ms)\n" +
+                       "✓ Test_WebHookSignatureVerification: PASSED (11ms)\n" +
+                       "3/3 tests passing. Branch coverage: 96.8%. Ready for staging deploy.";
+            }
+            if (taskDesc.Contains("Review") || agentName.Contains("Llama"))
+            {
+                return "Code Review Feedback:\n" +
+                       "• Memory optimization: Replaced LINQ queries in Update() with cached list.\n" +
+                       "• Async pipeline: Added timeout and cancellation token on HTTP requests.\n" +
+                       "• Zero GC allocations during continuous simulation loop.";
+            }
+
+            return $"Task Deliverable:\n" +
+                   $"Agent {agentName} formulated a complete operational plan for: {taskDesc}.\n" +
+                   $"Execution validated. Awaiting Manager Approval to finalize changes.";
         }
 
         private void OnAIResponseReceived(string agentId, string response)
