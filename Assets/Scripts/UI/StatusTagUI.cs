@@ -16,7 +16,7 @@ namespace AIManagerWorkspace
         [SerializeField] private TextMeshProUGUI statusText;
 
         [Header("Settings")]
-        [SerializeField] private Vector3 heightOffset = new Vector3(0, 2.1f, 0);
+        [SerializeField] private Vector3 heightOffset = new Vector3(0, 1.70f, 0);
         [SerializeField] private float colorLerpSpeed = 5f;
         [SerializeField] private bool billboardToCamera = true;
 
@@ -28,6 +28,7 @@ namespace AIManagerWorkspace
         {
             if (canvas == null) canvas = GetComponent<Canvas>();
             if (Camera.main != null) cameraTransform = Camera.main.transform;
+            SanitizeScales();
         }
 
         private void Start()
@@ -35,6 +36,20 @@ namespace AIManagerWorkspace
             if (cameraTransform == null && Camera.main != null)
             {
                 cameraTransform = Camera.main.transform;
+            }
+            SanitizeScales();
+        }
+
+        private void SanitizeScales()
+        {
+            // Enforce (1, 1, 1) scale on every child element under this canvas
+            var allTransforms = GetComponentsInChildren<Transform>(true);
+            foreach (var t in allTransforms)
+            {
+                if (t != transform)
+                {
+                    t.localScale = Vector3.one;
+                }
             }
         }
 

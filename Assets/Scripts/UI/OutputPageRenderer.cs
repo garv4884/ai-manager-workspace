@@ -19,8 +19,32 @@ namespace AIManagerWorkspace
 
         private TaskData currentTask;
 
+        private void Awake()
+        {
+            SanitizeScales();
+        }
+
+        private void OnEnable()
+        {
+            SanitizeScales();
+        }
+
+        public void SanitizeScales()
+        {
+            // Enforce (1, 1, 1) scale on every child element under this canvas
+            var allTransforms = GetComponentsInChildren<Transform>(true);
+            foreach (var t in allTransforms)
+            {
+                if (t != transform)
+                {
+                    t.localScale = Vector3.one;
+                }
+            }
+        }
+
         public void DisplayTaskOutput(AgentData agent, TaskData task)
         {
+            SanitizeScales();
             currentTask = task;
 
             if (headerTitleText != null)

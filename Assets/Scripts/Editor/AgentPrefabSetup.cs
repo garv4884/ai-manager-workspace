@@ -61,7 +61,8 @@ namespace AIManagerWorkspace
 
             // Background
             var bgGO = new GameObject("Background");
-            bgGO.transform.SetParent(tagCanvasGO.transform);
+            bgGO.transform.SetParent(tagCanvasGO.transform, false);
+            bgGO.transform.localScale = Vector3.one;
             var bgImg = bgGO.AddComponent<Image>();
             bgImg.color = new Color(0.1f, 0.12f, 0.18f, 0.9f);
             var bgRect = bgGO.GetComponent<RectTransform>();
@@ -72,7 +73,8 @@ namespace AIManagerWorkspace
 
             // Dot
             var dotGO = new GameObject("StatusDot");
-            dotGO.transform.SetParent(tagCanvasGO.transform);
+            dotGO.transform.SetParent(tagCanvasGO.transform, false);
+            dotGO.transform.localScale = Vector3.one;
             var dotImg = dotGO.AddComponent<Image>();
             dotImg.color = Color.green;
             var dotRect = dotGO.GetComponent<RectTransform>();
@@ -83,7 +85,8 @@ namespace AIManagerWorkspace
 
             // Agent Name text
             var nameGO = new GameObject("AgentNameText");
-            nameGO.transform.SetParent(tagCanvasGO.transform);
+            nameGO.transform.SetParent(tagCanvasGO.transform, false);
+            nameGO.transform.localScale = Vector3.one;
             var nameTmp = nameGO.AddComponent<TextMeshProUGUI>();
             nameTmp.text = "Agent Name";
             nameTmp.fontSize = 24;
@@ -97,7 +100,8 @@ namespace AIManagerWorkspace
 
             // Role text
             var roleGO = new GameObject("AgentRoleText");
-            roleGO.transform.SetParent(tagCanvasGO.transform);
+            roleGO.transform.SetParent(tagCanvasGO.transform, false);
+            roleGO.transform.localScale = Vector3.one;
             var roleTmp = roleGO.AddComponent<TextMeshProUGUI>();
             roleTmp.text = "Code Specialist";
             roleTmp.fontSize = 16;
@@ -110,7 +114,8 @@ namespace AIManagerWorkspace
 
             // Status text
             var statusGO = new GameObject("StatusText");
-            statusGO.transform.SetParent(tagCanvasGO.transform);
+            statusGO.transform.SetParent(tagCanvasGO.transform, false);
+            statusGO.transform.localScale = Vector3.one;
             var statusTmp = statusGO.AddComponent<TextMeshProUGUI>();
             statusTmp.text = "Free";
             statusTmp.fontSize = 18;
@@ -150,7 +155,8 @@ namespace AIManagerWorkspace
 
             // Paper Background
             var paperBgGO = new GameObject("PaperBackground");
-            paperBgGO.transform.SetParent(pageGO.transform);
+            paperBgGO.transform.SetParent(pageGO.transform, false);
+            paperBgGO.transform.localScale = Vector3.one;
             var paperBgImg = paperBgGO.AddComponent<Image>();
             paperBgImg.color = new Color(0.96f, 0.95f, 0.92f);
             var paperBgRect = paperBgGO.GetComponent<RectTransform>();
@@ -161,7 +167,8 @@ namespace AIManagerWorkspace
 
             // Banner
             var bannerGO = new GameObject("StatusBanner");
-            bannerGO.transform.SetParent(pageGO.transform);
+            bannerGO.transform.SetParent(pageGO.transform, false);
+            bannerGO.transform.localScale = Vector3.one;
             var bannerImg = bannerGO.AddComponent<Image>();
             bannerImg.color = new Color(0.15f, 0.6f, 1.0f);
             var bannerRect = bannerGO.GetComponent<RectTransform>();
@@ -172,7 +179,8 @@ namespace AIManagerWorkspace
 
             // Header Title
             var titleGO = new GameObject("HeaderTitle");
-            titleGO.transform.SetParent(pageGO.transform);
+            titleGO.transform.SetParent(pageGO.transform, false);
+            titleGO.transform.localScale = Vector3.one;
             var titleTmp = titleGO.AddComponent<TextMeshProUGUI>();
             titleTmp.text = "Task Output";
             titleTmp.fontSize = 22;
@@ -186,7 +194,8 @@ namespace AIManagerWorkspace
 
             // Agent signature
             var sigGO = new GameObject("Signature");
-            sigGO.transform.SetParent(pageGO.transform);
+            sigGO.transform.SetParent(pageGO.transform, false);
+            sigGO.transform.localScale = Vector3.one;
             var sigTmp = sigGO.AddComponent<TextMeshProUGUI>();
             sigTmp.text = "Agent: Claude";
             sigTmp.fontSize = 15;
@@ -200,7 +209,8 @@ namespace AIManagerWorkspace
 
             // Body content
             var bodyGO = new GameObject("BodyContent");
-            bodyGO.transform.SetParent(pageGO.transform);
+            bodyGO.transform.SetParent(pageGO.transform, false);
+            bodyGO.transform.localScale = Vector3.one;
             var bodyTmp = bodyGO.AddComponent<TextMeshProUGUI>();
             bodyTmp.text = "Awaiting instructions...";
             bodyTmp.fontSize = 16;
@@ -213,7 +223,8 @@ namespace AIManagerWorkspace
 
             // Action prompt
             var promptGO = new GameObject("ActionPrompt");
-            promptGO.transform.SetParent(pageGO.transform);
+            promptGO.transform.SetParent(pageGO.transform, false);
+            promptGO.transform.localScale = Vector3.one;
             var promptTmp = promptGO.AddComponent<TextMeshProUGUI>();
             promptTmp.text = "Thumbs Up to Approve | Thumbs Down to Reject";
             promptTmp.fontSize = 14;
@@ -268,6 +279,20 @@ namespace AIManagerWorkspace
             grabSO.ApplyModifiedProperties();
 
             // ── 9. Save as Prefab ──────────────────────────────────────────────
+            // Enforce (1, 1, 1) scale on every object under every canvas in prefab
+            var allCanvases = agentGO.GetComponentsInChildren<Canvas>(true);
+            foreach (var c in allCanvases)
+            {
+                var allTransforms = c.GetComponentsInChildren<Transform>(true);
+                foreach (var t in allTransforms)
+                {
+                    if (t != c.transform)
+                    {
+                        t.localScale = Vector3.one;
+                    }
+                }
+            }
+
             const string prefabFolder = "Assets/Prefabs";
             if (!AssetDatabase.IsValidFolder(prefabFolder))
                 AssetDatabase.CreateFolder("Assets", "Prefabs");

@@ -69,6 +69,20 @@ namespace AIManagerWorkspace
                 GameObject go = Instantiate(agentPrefab, desk.position, desk.rotation);
                 go.name = $"Agent_{(i < names.Length ? names[i] : $"Agent{i}")}";
 
+                // Enforce (1, 1, 1) scale on every object under every canvas on instantiated agent
+                Canvas[] canvases = go.GetComponentsInChildren<Canvas>(true);
+                foreach (var c in canvases)
+                {
+                    Transform[] allTransforms = c.GetComponentsInChildren<Transform>(true);
+                    foreach (var t in allTransforms)
+                    {
+                        if (t != c.transform)
+                        {
+                            t.localScale = Vector3.one;
+                        }
+                    }
+                }
+
                 AgentController controller = go.GetComponent<AgentController>();
                 if (controller == null)
                 {

@@ -69,6 +69,8 @@ namespace AIManagerWorkspace
             assignedDeskTransform = desk;
             managerPresentTransform = presentPoint;
 
+            SanitizeCanvasScales();
+
             SetStatus(AgentStatus.Free);
             MoveToDesk();
 
@@ -275,8 +277,26 @@ namespace AIManagerWorkspace
                     pageHoldPoint.position,
                     pageHoldPoint.rotation);
 
+                SanitizeCanvasScales();
+
                 if (currentTask != null)
                     outputPage.DisplayTaskOutput(data, currentTask);
+            }
+        }
+
+        private void SanitizeCanvasScales()
+        {
+            var canvases = GetComponentsInChildren<Canvas>(true);
+            foreach (var c in canvases)
+            {
+                var children = c.GetComponentsInChildren<Transform>(true);
+                foreach (var child in children)
+                {
+                    if (child != c.transform)
+                    {
+                        child.localScale = Vector3.one;
+                    }
+                }
             }
         }
 
