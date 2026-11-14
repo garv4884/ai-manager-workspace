@@ -1,122 +1,116 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
-using Unity.AI.Navigation;
 
 namespace AIManagerWorkspace
 {
+    /// <summary>
+    /// Animates workstations into a layout template. Desks carve the NavMesh with
+    /// NavMeshObstacles, so nothing needs rebaking when they move, and seated agents
+    /// ride along because they are parented to their seats.
+    /// </summary>
     public class WorkspaceLayoutManager : MonoBehaviour
     {
-        [SerializeField] private Transform[] deskTransforms;
-        [SerializeField] private Transform managerPlatformTransform;
         [SerializeField] private AgentManager agentManager;
-        [SerializeField] private NavMeshSurface navMeshSurface;
-        [SerializeField] private float transitionDuration = 1.2f;
-        [SerializeField] private float deskSpacing = 2.4f;
-        [SerializeField] private float circleRadius = 5.0f;
+        [SerializeField] private Transform center;
+        [SerializeField] private float transitionSeconds = 1.6f;
+        [SerializeField] private LayoutType startLayout = LayoutType.Grid;
 
-        private LayoutType currentLayout = LayoutType.Grid;
-        private Coroutine activeTransition;
+        [Header("Placement limits")]
+        [SerializeField] private Vector2 roomMin = new Vector2(-11.0f, -8.2f);
+        [SerializeField] private Vector2 roomMax = new Vector2(11.0f, 13.4f);
+        [SerializeField] private float platformClearRadius = 3.6f;
+        [SerializeField] private float laneHalfWidth = 1.7f;
+        [SerializeField] private float laneLength = 9.5f;
+        [SerializeField] private Rect[] keepOut = { new Rect(6.6f, -9.2f, 6.0f, 6.6f) };   // meeting room
 
-        public void ApplyLayout(LayoutType type)
+        private Coroutine transition;
+
+        public LayoutType Current { get; private set; }
+        public event Action Changed;
+
+        private void Start() => ApplyLayout(startLayout, instant: true);
+
+        public void ApplyLayout(LayoutType type) => ApplyLayout(type, false);
+
+        public void ApplyLayout(LayoutType type, bool instant)
         {
-            currentLayout = type;
-            int activeCount = 0;
-            if (deskTransforms != null)
-            {
-                foreach (var t in deskTransforms)
-                {
-                    if (t != null && t.gameObject.activeSelf) activeCount++;
-                }
-            }
-
-            Vector3 managerPos = managerPlatformTransform != null ? managerPlatformTransform.position : Vector3.zero;
-            List<DeskTransformData> targets = WorkspaceLayout.GenerateLayout(type, activeCount, managerPos, deskSpacing, circleRadius);
-
-            if (activeTransition != null)
-                StopCoroutine(activeTransition);
-
-            activeTransition = StartCoroutine(AnimateDesksToLayout(targets));
+            if (type == LayoutType.Custom) return;
+            var desks = ActiveWorkstations();
+            List<DeskPose> poses = WorkspaceLayout.Generate(type, desks.Count, center.position);
+            Current = type;
+            Changed?.Invoke();
+            if (transition != null) StopCoroutine(transition);
+            transition = StartCoroutine(Animate(desks, poses, instant ? 0f : transitionSeconds));
         }
 
-        private IEnumerator AnimateDesksToLayout(List<DeskTransformData> targets)
+        public void MarkCustom()
         {
-            List<Transform> activeDesks = new List<Transform>();
-            if (deskTransforms != null)
+            Current = LayoutType.Custom;
+            Changed?.Invoke();
+        }
+
+        public Quaternion FacingFor(Vector3 position) => WorkspaceLayout.Facing(position, center.position);
+
+        /// <summary>Keeps a dragged desk inside the room and off the platform, queue lane and meeting room.</summary>
+        public Vector3 ClampPosition(Vector3 p)
+        {
+            p.y = 0f;
+            p.x = Mathf.Clamp(p.x, roomMin.x, roomMax.x);
+            p.z = Mathf.Clamp(p.z, roomMin.y, roomMax.y);
+
+            Vector3 c = center.position; c.y = 0f;
+            Vector3 fromC = p - c;
+            if (fromC.magnitude < platformClearRadius)
+                p = c + (fromC.sqrMagnitude > 0.001f ? fromC.normalized : Vector3.right) * platformClearRadius;
+
+            float localZ = p.z - c.z, localX = p.x - c.x;
+            if (localZ > 0f && localZ < laneLength && Mathf.Abs(localX) < laneHalfWidth)
+                p.x = c.x + Mathf.Sign(localX == 0f ? 1f : localX) * laneHalfWidth;
+
+            foreach (Rect r in keepOut)
             {
-                foreach (var t in deskTransforms)
-                {
-                    if (t != null && t.gameObject.activeSelf) activeDesks.Add(t);
-                }
+                if (!r.Contains(new Vector2(p.x, p.z))) continue;
+                float left = p.x - r.xMin, right = r.xMax - p.x, bottom = p.z - r.yMin, top = r.yMax - p.z;
+                float m = Mathf.Min(Mathf.Min(left, right), Mathf.Min(bottom, top));
+                if (m == left) p.x = r.xMin; else if (m == right) p.x = r.xMax;
+                else if (m == bottom) p.z = r.yMin; else p.z = r.yMax;
             }
+            return p;
+        }
 
-            int count = Mathf.Min(activeDesks.Count, targets.Count);
-            Vector3[] startPositions = new Vector3[count];
-            Quaternion[] startRotations = new Quaternion[count];
+        private List<Workstation> ActiveWorkstations()
+        {
+            var list = new List<Workstation>();
+            foreach (var w in agentManager.Workstations) if (w != null && w.gameObject.activeSelf) list.Add(w);
+            return list;
+        }
 
-            for (int i = 0; i < count; i++)
+        private IEnumerator Animate(List<Workstation> desks, List<DeskPose> poses, float seconds)
+        {
+            int n = Mathf.Min(desks.Count, poses.Count);
+            var p0 = new Vector3[n];
+            var r0 = new Quaternion[n];
+            for (int i = 0; i < n; i++) { p0[i] = desks[i].transform.position; r0[i] = desks[i].transform.rotation; }
+
+            float t = seconds <= 0f ? 1f : 0f;
+            while (t < 1f)
             {
-                startPositions[i] = activeDesks[i].position;
-                startRotations[i] = activeDesks[i].rotation;
-            }
-
-            float elapsed = 0f;
-            while (elapsed < transitionDuration)
-            {
-                elapsed += Time.deltaTime;
-                float t = Mathf.Clamp01(elapsed / transitionDuration);
-                float smoothT = Mathf.SmoothStep(0f, 1f, t);
-
-                for (int i = 0; i < count; i++)
+                t += Time.deltaTime / seconds;
+                float k = Mathf.SmoothStep(0f, 1f, t);
+                for (int i = 0; i < n; i++)
                 {
-                    activeDesks[i].position = Vector3.Lerp(startPositions[i], targets[i].position, smoothT);
-                    activeDesks[i].rotation = Quaternion.Lerp(startRotations[i], targets[i].rotation, smoothT);
+                    // Lift each desk slightly mid-flight so paths crossing each other read clearly.
+                    Vector3 hop = Vector3.up * Mathf.Sin(k * Mathf.PI) * 0.25f;
+                    desks[i].transform.SetPositionAndRotation(Vector3.Lerp(p0[i], poses[i].position, k) + hop,
+                        Quaternion.Slerp(r0[i], poses[i].rotation, k));
                 }
                 yield return null;
             }
-
-            // Snap to final positions
-            for (int i = 0; i < count; i++)
-            {
-                activeDesks[i].position = targets[i].position;
-                activeDesks[i].rotation = targets[i].rotation;
-            }
-
-            // Rebuild NavMesh on floor
-            if (navMeshSurface != null)
-            {
-                navMeshSurface.BuildNavMesh();
-            }
-            else
-            {
-                var floorSurface = FindAnyObjectByType<NavMeshSurface>();
-                floorSurface?.BuildNavMesh();
-            }
-
-            // Update free agents to move to their newly positioned desks
-            if (agentManager != null)
-            {
-                var freeAgents = agentManager.GetAgentsByStatus(AgentStatus.Free);
-                foreach (var a in freeAgents)
-                {
-                    a.MoveToDesk();
-                }
-            }
-
-            activeTransition = null;
+            for (int i = 0; i < n; i++)
+                desks[i].transform.SetPositionAndRotation(poses[i].position, poses[i].rotation);
+            transition = null;
         }
-
-        public void SetDeskCount(int count)
-        {
-            if (deskTransforms == null) return;
-            count = Mathf.Clamp(count, 0, deskTransforms.Length);
-            for (int i = 0; i < deskTransforms.Length; i++)
-            {
-                if (deskTransforms[i] != null)
-                    deskTransforms[i].gameObject.SetActive(i < count);
-            }
-        }
-
-        public LayoutType GetCurrentLayout() => currentLayout;
     }
 }

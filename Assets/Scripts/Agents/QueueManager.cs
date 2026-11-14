@@ -1,153 +1,125 @@
+using System;
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
 namespace AIManagerWorkspace
 {
     /// <summary>
-    /// Manages the queue of agents waiting to present to the manager.
-    /// Agents line up in world-space slots and advance one at a time
-    /// to the manager's desk.
+    /// The line of agents waiting for the manager, and the presenting agent on the lift.
+    /// Agents queue along <see cref="queueStart"/>'s forward axis (away from the desk),
+    /// one at a time ride the lift up, and leave once the manager decides.
     /// </summary>
     public class QueueManager : MonoBehaviour
     {
-        // ─── Inspector Fields ─────────────────────────────────────────────────
-        [Header("Queue Layout")]
-        [Tooltip("4 world-space positions forming the line leading to the manager desk.")]
-        [SerializeField] private Transform[] queueSlotTransforms;
+        public enum PageExit { HandBack, File, Discard }
 
-        [Tooltip("The position directly in front of the manager's desk.")]
-        [SerializeField] private Transform presentingTransform;
+        [SerializeField] private Transform queueStart;
+        [SerializeField] private float spacing = 1.1f;
+        [SerializeField] private LiftPad lift;
+        [SerializeField] private ReviewDesk reviewDesk;
 
-        // ─── Private State ────────────────────────────────────────────────────
-        private Queue<AgentController> waitingQueue = new Queue<AgentController>();
-        private AgentController currentPresenter = null;
-        private bool isManagerBusy = false;
+        private readonly List<AgentController> waiting = new List<AgentController>();
 
-        // ─── Public Accessors ─────────────────────────────────────────────────
+        public AgentController Presenter { get; private set; }
+        public bool IsPresenterReady { get; private set; }
+        public IReadOnlyList<AgentController> Waiting => waiting;
+        public ReviewDesk Desk => reviewDesk;
+        public int PendingCount => waiting.Count + (Presenter != null ? 1 : 0);
 
-        /// <summary>Returns the agent currently presenting to the manager.</summary>
-        public AgentController GetCurrentPresenter() => currentPresenter;
+        public Quaternion LineFacing => Quaternion.LookRotation(-queueStart.forward);
 
-        /// <summary>Property alias for the current presenter (used by GestureInteractionManager).</summary>
-        public AgentController CurrentPresenter => currentPresenter;
+        /// <summary>Raised when the line or the presenter changes.</summary>
+        public event Action Changed;
+        /// <summary>Raised when a presenter's page is on the desk and decisions are accepted.</summary>
+        public event Action<AgentController> PresenterReady;
 
-        /// <summary>Returns the number of agents waiting in the queue (excluding the presenter).</summary>
-        public int GetQueueLength() => waitingQueue.Count;
-
-        // ─── Queue Operations ─────────────────────────────────────────────────
-
-        /// <summary>
-        /// Adds an agent to the waiting queue, repositions all queued agents,
-        /// and advances the queue if the manager is free.
-        /// </summary>
-        public void EnqueueAgent(AgentController agent)
+        public Vector3 SlotPosition(AgentController agent)
         {
-            if (agent == null) return;
+            int index = waiting.IndexOf(agent);
+            if (index < 0) index = waiting.Count;
+            return queueStart.position + queueStart.forward * (spacing * index);
+        }
 
-            // Avoid duplicates
-            if (waitingQueue.Contains(agent) || agent == currentPresenter)
+        public void Enqueue(AgentController agent)
+        {
+            if (agent == null || waiting.Contains(agent) || agent == Presenter) return;
+            waiting.Add(agent);
+            RefreshPositions();
+            agent.GoToQueueSlot(this);
+            Changed?.Invoke();
+            TryAdvance();
+        }
+
+        private void TryAdvance()
+        {
+            if (Presenter != null || waiting.Count == 0) return;
+
+            Presenter = waiting[0];
+            waiting.RemoveAt(0);
+            IsPresenterReady = false;
+            RefreshPositions();
+            Changed?.Invoke();
+
+            AgentController agent = Presenter;
+            agent.GoPresent(lift, reviewDesk, () =>
             {
-                Debug.LogWarning($"[QueueManager] '{agent.Data?.agentName}' is already in the queue or presenting.");
-                return;
-            }
-
-            waitingQueue.Enqueue(agent);
-            Debug.Log($"[QueueManager] '{agent.Data?.agentName}' enqueued. Queue length: {waitingQueue.Count}");
-
-            UpdateQueuePositions();
-
-            if (!isManagerBusy)
-                AdvanceQueue();
+                if (Presenter != agent) return;
+                IsPresenterReady = true;
+                agent.NotifyChanged();
+                Changed?.Invoke();
+                PresenterReady?.Invoke(agent);
+            });
         }
 
         /// <summary>
-        /// If the manager is free and there are waiting agents, dequeues the
-        /// next agent and sends them to present.
+        /// Ends the presentation: the page is handed back, filed or discarded, the lift goes
+        /// down, and the agent walks back to its desk with <paramref name="newStatus"/>.
         /// </summary>
-        public void AdvanceQueue()
+        public bool FinishPresenting(AgentController agent, PageExit exit, Action atDesk, AgentStatus newStatus, bool clearTask = false)
         {
-            if (isManagerBusy)
-            {
-                Debug.Log("[QueueManager] Manager is busy; cannot advance queue.");
-                return;
-            }
-
-            if (waitingQueue.Count == 0)
-            {
-                Debug.Log("[QueueManager] Queue is empty; nothing to advance.");
-                return;
-            }
-
-            currentPresenter = waitingQueue.Dequeue();
-            isManagerBusy = true;
-
-            Debug.Log($"[QueueManager] Advancing '{currentPresenter.Data?.agentName}' to manager desk.");
-
-            // Reposition remaining agents now that one has left the queue
-            UpdateQueuePositions();
-
-            // Override the agent's target with the presenting transform if set,
-            // otherwise AgentController.MoveToManager uses managerPresentTransform.
-            if (presentingTransform != null)
-                currentPresenter.MoveToQueue(presentingTransform.position);
-
-            currentPresenter.MoveToManager();
+            if (agent == null || agent != Presenter || !IsPresenterReady) return false;
+            IsPresenterReady = false;
+            Changed?.Invoke();
+            StartCoroutine(FinishRoutine(agent, exit, atDesk, newStatus, clearTask));
+            return true;
         }
 
-        /// <summary>
-        /// Called when the manager has finished interacting with the current
-        /// presenter. Sends them back to their desk and advances the queue.
-        /// </summary>
-        public void OnManagerDoneWithPresenter()
+        private IEnumerator FinishRoutine(AgentController agent, PageExit exit, Action atDesk, AgentStatus newStatus, bool clearTask)
         {
-            if (currentPresenter == null)
+            switch (exit)
             {
-                Debug.LogWarning("[QueueManager] OnManagerDoneWithPresenter called but no current presenter.");
-                return;
+                case PageExit.File:
+                    reviewDesk.Play(ReviewDesk.Sfx.Approve);
+                    yield return agent.Page.FileTo(reviewDesk.DoneTray);
+                    reviewDesk.AddCompleted();
+                    break;
+                case PageExit.Discard:
+                    reviewDesk.Play(ReviewDesk.Sfx.Dismiss);
+                    yield return agent.Page.Discard();
+                    break;
+                default:
+                    reviewDesk.Play(ReviewDesk.Sfx.Changes);
+                    yield return agent.Page.FlyBack();
+                    break;
             }
 
-            Debug.Log($"[QueueManager] Manager done with '{currentPresenter.Data?.agentName}'.");
-            currentPresenter.MoveToDesk();
-            currentPresenter = null;
-            isManagerBusy = false;
-
-            AdvanceQueue();
+            yield return lift.Lower();
+            agent.StepOffLift(lift);
+            Presenter = null;
+            agent.AfterDecision(newStatus, clearTask, atDesk);
+            Changed?.Invoke();
+            TryAdvance();
         }
 
-        // ─── Position Updates ─────────────────────────────────────────────────
-
-        /// <summary>
-        /// Moves each queued agent to the corresponding slot transform.
-        /// Agents beyond available slots stay at their last position.
-        /// </summary>
-        private void UpdateQueuePositions()
+        private void RefreshPositions()
         {
-            if (queueSlotTransforms == null || queueSlotTransforms.Length == 0) return;
-
-            int slotIndex = 0;
-            foreach (AgentController agent in waitingQueue)
+            for (int i = 0; i < waiting.Count; i++)
             {
-                if (agent == null) continue;
-
-                if (slotIndex < queueSlotTransforms.Length)
-                {
-                    Transform slot = queueSlotTransforms[slotIndex];
-                    if (slot != null)
-                    {
-                        agent.MoveToQueue(slot.position);
-                        Debug.Log($"[QueueManager] '{agent.Data?.agentName}' → slot {slotIndex}.");
-                    }
-                }
-                else
-                {
-                    // More agents than slots: they stack at the last slot
-                    Transform lastSlot = queueSlotTransforms[queueSlotTransforms.Length - 1];
-                    if (lastSlot != null)
-                        agent.MoveToQueue(lastSlot.position);
-                }
-
-                slotIndex++;
+                waiting[i].Data.queuePosition = i;
+                waiting[i].NotifyChanged();
             }
+            if (Presenter != null) Presenter.Data.queuePosition = -1;
         }
     }
 }

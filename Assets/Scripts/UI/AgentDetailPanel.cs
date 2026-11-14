@@ -1,163 +1,73 @@
-using System.Collections;
+using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
-using TMPro;
 
 namespace AIManagerWorkspace
 {
+    /// <summary>Desk card for the agent selected by pointing and pinching.</summary>
     public class AgentDetailPanel : MonoBehaviour
     {
+        [SerializeField] private Image accentBar;
+        [SerializeField] private Image statusPill;
         [SerializeField] private TextMeshProUGUI nameText;
-        [SerializeField] private TextMeshProUGUI roleText;
         [SerializeField] private TextMeshProUGUI statusText;
-        [SerializeField] private TextMeshProUGUI taskDescText;
-        [SerializeField] private TextMeshProUGUI outputPreviewText;
-        [SerializeField] private Image statusColorBar;
-        [SerializeField] private CanvasGroup panelGroup;
-        [SerializeField] private float fadeDuration = 0.2f;
+        [SerializeField] private TextMeshProUGUI bodyText;
+        [SerializeField] private Button assignButton;
+        [SerializeField] private TextMeshProUGUI assignLabel;
+        [SerializeField] private Button closeButton;
 
-        private AgentController trackedAgent;
-        private Coroutine activeFade;
+        private AgentController agent;
 
-        private void Awake()
+        private void Start()
         {
-            if (panelGroup != null)
-            {
-                panelGroup.alpha = 1f;
-                panelGroup.interactable = true;
-                panelGroup.blocksRaycasts = true;
-            }
-            gameObject.SetActive(true);
+            var agents = GameManager.Instance.Agents;
+            agents.SelectionChanged += Show;
+            agents.AnyAgentChanged += Refresh;
+            assignButton.onClick.AddListener(() => GameManager.Instance.OpenAssignTaskKeyboard(agent));
+            closeButton.onClick.AddListener(() => GameManager.Instance.Agents.Select(null));
+            Show(null);
         }
 
-        /// <summary>
-        /// Shows the panel populated with data from the given agent and starts live tracking.
-        /// </summary>
-        public void ShowForAgent(AgentController agent)
+        private void Show(AgentController a)
         {
-            if (agent == null) return;
-
-            trackedAgent = agent;
-            PopulateFields(agent.Data, agent.CurrentTask);
-
-            gameObject.SetActive(true);
-
-            if (activeFade != null) StopCoroutine(activeFade);
-            activeFade = StartCoroutine(FadeIn());
-
-            // Start periodic refresh every 0.5 seconds
-            CancelInvoke(nameof(Refresh));
-            InvokeRepeating(nameof(Refresh), 0.5f, 0.5f);
+            agent = a;
+            Refresh();
         }
 
-        /// <summary>
-        /// Hides the panel and clears tracked agent.
-        /// </summary>
-        public void Hide()
-        {
-            CancelInvoke(nameof(Refresh));
-            trackedAgent = null;
-
-            if (activeFade != null) StopCoroutine(activeFade);
-            activeFade = StartCoroutine(FadeOut());
-        }
-
-        /// <summary>
-        /// Refreshes all displayed fields from the tracked agent's current data.
-        /// Called every 0.5s via InvokeRepeating.
-        /// </summary>
         private void Refresh()
         {
-            if (trackedAgent == null)
+            if (agent == null)
             {
-                Hide();
+                nameText.text = "No agent selected";
+                statusText.text = "";
+                statusPill.color = new Color(0.3f, 0.33f, 0.38f);
+                accentBar.color = new Color(0.3f, 0.33f, 0.38f);
+                bodyText.text = "Point at an agent or a desk and pinch to select it.\nPinch and sweep to slide a desk somewhere else.";
+                assignButton.interactable = false;
+                closeButton.gameObject.SetActive(false);
                 return;
             }
-            PopulateFields(trackedAgent.Data, trackedAgent.CurrentTask);
+
+            AgentData d = agent.Data;
+            TaskData t = agent.CurrentTask;
+            nameText.text = $"{d.agentName}  <size=70%><color=#9AA3B2>{d.agentRole}</color></size>";
+            statusText.text = d.StatusLabel;
+            statusPill.color = d.StatusColor;
+            accentBar.color = d.accentColor;
+            closeButton.gameObject.SetActive(true);
+
+            string body = t != null
+                ? $"<b>{t.title}</b>\n{t.description}\n<color=#9AA3B2>{(d.status == AgentStatus.Working ? $"Progress {Mathf.RoundToInt(t.progress * 100f)}%" : d.ActivityLabel)}</color>"
+                : $"<color=#9AA3B2>{(d.activity == AgentActivity.InMeeting ? "In group discussion." : "Idle and ready for a task.")}</color>";
+            bodyText.text = body + $"\n\n<color=#9AA3B2>Tasks completed: {d.completedTasks}</color>";
+
+            assignButton.interactable = agent.CanTakeTask;
+            assignLabel.text = agent.CanTakeTask ? "ASSIGN TASK" : "BUSY";
         }
 
-        private void PopulateFields(AgentData data, TaskData task)
+        private void Update()
         {
-            if (data == null) return;
-
-            if (nameText != null)
-                nameText.text = data.agentName;
-
-            if (roleText != null)
-                roleText.text = data.agentRole;
-
-            if (statusText != null)
-                statusText.text = data.GetStatusDisplayString();
-
-            if (taskDescText != null)
-                taskDescText.text = task != null ? task.description : (!string.IsNullOrEmpty(data.currentTaskDescription) ? data.currentTaskDescription : "â€”");
-
-            if (outputPreviewText != null)
-            {
-                string outStr = task != null && !string.IsNullOrEmpty(task.outputResult)
-                    ? task.outputResult
-                    : (!string.IsNullOrEmpty(data.currentOutput) ? data.currentOutput : "No output yet.");
-                outputPreviewText.text = TruncateOutput(outStr, 200);
-            }
-
-            if (statusColorBar != null)
-            {
-                statusColorBar.color = data.GetStatusColor();
-            }
-        }
-
-        private string TruncateOutput(string text, int maxLength)
-        {
-            if (string.IsNullOrEmpty(text)) return string.Empty;
-            if (text.Length <= maxLength) return text;
-            return text.Substring(0, maxLength) + "â€¦";
-        }
-
-        private IEnumerator FadeIn()
-        {
-            if (panelGroup == null) yield break;
-
-            panelGroup.interactable = true;
-            panelGroup.blocksRaycasts = true;
-
-            float startAlpha = panelGroup.alpha;
-            float elapsed = 0f;
-
-            while (elapsed < fadeDuration)
-            {
-                elapsed += Time.deltaTime;
-                panelGroup.alpha = Mathf.Lerp(startAlpha, 1f, Mathf.Clamp01(elapsed / fadeDuration));
-                yield return null;
-            }
-
-            panelGroup.alpha = 1f;
-            activeFade = null;
-        }
-
-        private IEnumerator FadeOut()
-        {
-            if (panelGroup == null)
-            {
-                gameObject.SetActive(false);
-                yield break;
-            }
-
-            panelGroup.interactable = false;
-            panelGroup.blocksRaycasts = false;
-
-            float startAlpha = panelGroup.alpha;
-            float elapsed = 0f;
-
-            while (elapsed < fadeDuration)
-            {
-                elapsed += Time.deltaTime;
-                panelGroup.alpha = Mathf.Lerp(startAlpha, 0f, Mathf.Clamp01(elapsed / fadeDuration));
-                yield return null;
-            }
-
-            panelGroup.alpha = 0f;
-            gameObject.SetActive(false);
-            activeFade = null;
+            if (agent != null && agent.Data.status == AgentStatus.Working && Time.frameCount % 15 == 0) Refresh();
         }
     }
 }

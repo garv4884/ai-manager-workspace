@@ -1,328 +1,173 @@
-using UnityEngine;
-using UnityEditor;
-using UnityEngine.UI;
-using UnityEngine.AI;
 using TMPro;
+using UnityEditor;
+using UnityEngine;
+using UnityEngine.AI;
+using UnityEngine.UI;
+using static AIManagerWorkspace.BuilderKit;
 
 namespace AIManagerWorkspace
 {
-    /// <summary>
-    /// Creates a complete Agent NPC prefab with all components and UI child elements.
-    /// Run via Tools > AI Manager > Create Agent Prefab
-    /// </summary>
+    /// <summary>Builds Assets/Prefabs/AgentNPC.prefab: stylised avatar, head tag, carried page.</summary>
     public static class AgentPrefabSetup
     {
+        public const string PrefabPath = "Assets/Prefabs/AgentNPC.prefab";
+
         [MenuItem("Tools/AI Manager/Create Agent Prefab")]
-        public static void CreateAgentPrefab()
+        public static GameObject CreateAgentPrefab()
         {
-            // ── 1. Root GameObject ─────────────────────────────────────────────
-            var agentGO = new GameObject("AgentNPC");
+            Material shirt = Mat("Agent_Shirt", new Color(0.6f, 0.6f, 0.65f), 0.2f);
+            Material trousers = Mat("Agent_Trousers", new Color(0.22f, 0.23f, 0.27f), 0.2f);
+            Material skin = Mat("Agent_Skin", Palette.Skin, 0.35f);
+            Material visor = Mat("Agent_Visor", new Color(0.08f, 0.09f, 0.11f), 0.9f, 0.2f);
+            Material accent = Mat("Agent_Accent", new Color(0.4f, 0.4f, 0.45f), 0.4f);
+            Material ring = Emissive("Agent_SelectionRing", Palette.Teal, 2.2f);
 
-            // ── 2. Body Visual (human proportion avatar) ──────────────────────
-            var body = GameObject.CreatePrimitive(PrimitiveType.Capsule);
-            body.name = "Body";
-            body.transform.SetParent(agentGO.transform);
-            body.transform.localPosition = new Vector3(0, 0.65f, 0);
-            body.transform.localScale = new Vector3(0.35f, 0.55f, 0.35f);
-            SetMaterialURP(body, new Color(0.2f, 0.45f, 0.85f));
+            var root = new GameObject("AgentNPC");
 
-            // ── 3. Head Visual ─────────────────────────────────────────────────
-            var head = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-            head.name = "Head";
-            head.transform.SetParent(agentGO.transform);
-            head.transform.localPosition = new Vector3(0, 1.35f, 0);
-            head.transform.localScale = Vector3.one * 0.22f;
-            SetMaterialURP(head, new Color(0.92f, 0.78f, 0.65f));
+            // ── Avatar rig ───────────────────────────────────────────────────
+            var visual = Empty("Visual", root.transform, Vector3.zero);
+            var body = Empty("Body", visual.transform, Vector3.zero);
 
-            // ── 4. Page Hold Point (where output page floats) ──────────────────
-            var pageHold = new GameObject("PageHoldPoint");
-            pageHold.transform.SetParent(agentGO.transform);
-            pageHold.transform.localPosition = new Vector3(0.20f, 0.85f, 0.30f);
-            pageHold.transform.localRotation = Quaternion.Euler(15f, -15f, 0);
-
-            // ── 5. Status Tag Anchor ───────────────────────────────────────────
-            var tagAnchor = new GameObject("StatusTagAnchor");
-            tagAnchor.transform.SetParent(agentGO.transform);
-            tagAnchor.transform.localPosition = new Vector3(0, 1.58f, 0);
-
-            // ── 6. Status Tag UI (World Space Billboard) ───────────────────────
-            var tagCanvasGO = new GameObject("StatusTagCanvas");
-            tagCanvasGO.transform.SetParent(tagAnchor.transform);
-            tagCanvasGO.transform.localPosition = Vector3.zero;
-
-            var tagCanvas = tagCanvasGO.AddComponent<Canvas>();
-            tagCanvas.renderMode = RenderMode.WorldSpace;
-            tagCanvasGO.AddComponent<CanvasScaler>();
-            tagCanvasGO.AddComponent<GraphicRaycaster>();
-
-            var tagRect = tagCanvasGO.GetComponent<RectTransform>();
-            tagRect.sizeDelta = new Vector2(240, 80);
-            tagRect.localScale = Vector3.one * 0.0011f;
-
-            // Background
-            var bgGO = new GameObject("Background");
-            bgGO.transform.SetParent(tagCanvasGO.transform, false);
-            bgGO.transform.localScale = Vector3.one;
-            var bgImg = bgGO.AddComponent<Image>();
-            bgImg.color = new Color(0.1f, 0.12f, 0.18f, 0.9f);
-            var bgRect = bgGO.GetComponent<RectTransform>();
-            bgRect.anchorMin = Vector2.zero;
-            bgRect.anchorMax = Vector2.one;
-            bgRect.offsetMin = Vector2.zero;
-            bgRect.offsetMax = Vector2.zero;
-
-            // Dot
-            var dotGO = new GameObject("StatusDot");
-            dotGO.transform.SetParent(tagCanvasGO.transform, false);
-            dotGO.transform.localScale = Vector3.one;
-            var dotImg = dotGO.AddComponent<Image>();
-            dotImg.color = Color.green;
-            var dotRect = dotGO.GetComponent<RectTransform>();
-            dotRect.anchorMin = new Vector2(0, 0.5f);
-            dotRect.anchorMax = new Vector2(0, 0.5f);
-            dotRect.sizeDelta = new Vector2(16, 16);
-            dotRect.anchoredPosition = new Vector2(24, 0);
-
-            // Agent Name text
-            var nameGO = new GameObject("AgentNameText");
-            nameGO.transform.SetParent(tagCanvasGO.transform, false);
-            nameGO.transform.localScale = Vector3.one;
-            var nameTmp = nameGO.AddComponent<TextMeshProUGUI>();
-            nameTmp.text = "Agent Name";
-            nameTmp.fontSize = 24;
-            nameTmp.fontStyle = FontStyles.Bold;
-            nameTmp.color = Color.white;
-            var nameRect = nameGO.GetComponent<RectTransform>();
-            nameRect.anchorMin = new Vector2(0, 0.5f);
-            nameRect.anchorMax = new Vector2(1, 1);
-            nameRect.offsetMin = new Vector2(45, 0);
-            nameRect.offsetMax = new Vector2(-15, -10);
-
-            // Role text
-            var roleGO = new GameObject("AgentRoleText");
-            roleGO.transform.SetParent(tagCanvasGO.transform, false);
-            roleGO.transform.localScale = Vector3.one;
-            var roleTmp = roleGO.AddComponent<TextMeshProUGUI>();
-            roleTmp.text = "Code Specialist";
-            roleTmp.fontSize = 16;
-            roleTmp.color = new Color(0.7f, 0.8f, 0.95f);
-            var roleRect = roleGO.GetComponent<RectTransform>();
-            roleRect.anchorMin = new Vector2(0, 0.25f);
-            roleRect.anchorMax = new Vector2(1, 0.55f);
-            roleRect.offsetMin = new Vector2(45, 0);
-            roleRect.offsetMax = new Vector2(-15, 0);
-
-            // Status text
-            var statusGO = new GameObject("StatusText");
-            statusGO.transform.SetParent(tagCanvasGO.transform, false);
-            statusGO.transform.localScale = Vector3.one;
-            var statusTmp = statusGO.AddComponent<TextMeshProUGUI>();
-            statusTmp.text = "Free";
-            statusTmp.fontSize = 18;
-            statusTmp.fontStyle = FontStyles.Bold;
-            statusTmp.color = Color.green;
-            var statusRect = statusGO.GetComponent<RectTransform>();
-            statusRect.anchorMin = new Vector2(0, 0);
-            statusRect.anchorMax = new Vector2(1, 0.28f);
-            statusRect.offsetMin = new Vector2(45, 8);
-            statusRect.offsetMax = new Vector2(-15, 0);
-
-            var statusTagUI = tagCanvasGO.AddComponent<StatusTagUI>();
-            // Use SerializedObject to wire private fields
-            var tagSO = new SerializedObject(statusTagUI);
-            tagSO.FindProperty("canvas").objectReferenceValue = tagCanvas;
-            tagSO.FindProperty("backgroundImage").objectReferenceValue = bgImg;
-            tagSO.FindProperty("statusIndicatorDot").objectReferenceValue = dotImg;
-            tagSO.FindProperty("agentNameText").objectReferenceValue = nameTmp;
-            tagSO.FindProperty("agentRoleText").objectReferenceValue = roleTmp;
-            tagSO.FindProperty("statusText").objectReferenceValue = statusTmp;
-            tagSO.ApplyModifiedProperties();
-
-            // ── 7. Output Page (A4 Paper World Space UI) ──────────────────────
-            var pageGO = new GameObject("OutputPage");
-            pageGO.transform.SetParent(pageHold.transform);
-            pageGO.transform.localPosition = Vector3.zero;
-            pageGO.transform.localRotation = Quaternion.identity;
-
-            var pageCanvas = pageGO.AddComponent<Canvas>();
-            pageCanvas.renderMode = RenderMode.WorldSpace;
-            pageGO.AddComponent<CanvasScaler>();
-            pageGO.AddComponent<GraphicRaycaster>();
-
-            var pageRect = pageGO.GetComponent<RectTransform>();
-            pageRect.sizeDelta = new Vector2(280, 396);
-            pageRect.localScale = Vector3.one * 0.00075f;
-
-            // Paper Background
-            var paperBgGO = new GameObject("PaperBackground");
-            paperBgGO.transform.SetParent(pageGO.transform, false);
-            paperBgGO.transform.localScale = Vector3.one;
-            var paperBgImg = paperBgGO.AddComponent<Image>();
-            paperBgImg.color = new Color(0.96f, 0.95f, 0.92f);
-            var paperBgRect = paperBgGO.GetComponent<RectTransform>();
-            paperBgRect.anchorMin = Vector2.zero;
-            paperBgRect.anchorMax = Vector2.one;
-            paperBgRect.offsetMin = Vector2.zero;
-            paperBgRect.offsetMax = Vector2.zero;
-
-            // Banner
-            var bannerGO = new GameObject("StatusBanner");
-            bannerGO.transform.SetParent(pageGO.transform, false);
-            bannerGO.transform.localScale = Vector3.one;
-            var bannerImg = bannerGO.AddComponent<Image>();
-            bannerImg.color = new Color(0.15f, 0.6f, 1.0f);
-            var bannerRect = bannerGO.GetComponent<RectTransform>();
-            bannerRect.anchorMin = new Vector2(0, 0.92f);
-            bannerRect.anchorMax = Vector2.one;
-            bannerRect.offsetMin = Vector2.zero;
-            bannerRect.offsetMax = Vector2.zero;
-
-            // Header Title
-            var titleGO = new GameObject("HeaderTitle");
-            titleGO.transform.SetParent(pageGO.transform, false);
-            titleGO.transform.localScale = Vector3.one;
-            var titleTmp = titleGO.AddComponent<TextMeshProUGUI>();
-            titleTmp.text = "Task Output";
-            titleTmp.fontSize = 22;
-            titleTmp.fontStyle = FontStyles.Bold;
-            titleTmp.color = new Color(0.1f, 0.1f, 0.15f);
-            var titleRect = titleGO.GetComponent<RectTransform>();
-            titleRect.anchorMin = new Vector2(0.05f, 0.82f);
-            titleRect.anchorMax = new Vector2(0.95f, 0.91f);
-            titleRect.offsetMin = Vector2.zero;
-            titleRect.offsetMax = Vector2.zero;
-
-            // Agent signature
-            var sigGO = new GameObject("Signature");
-            sigGO.transform.SetParent(pageGO.transform, false);
-            sigGO.transform.localScale = Vector3.one;
-            var sigTmp = sigGO.AddComponent<TextMeshProUGUI>();
-            sigTmp.text = "Agent: Claude";
-            sigTmp.fontSize = 15;
-            sigTmp.fontStyle = FontStyles.Italic;
-            sigTmp.color = new Color(0.4f, 0.4f, 0.45f);
-            var sigRect = sigGO.GetComponent<RectTransform>();
-            sigRect.anchorMin = new Vector2(0.05f, 0.76f);
-            sigRect.anchorMax = new Vector2(0.95f, 0.82f);
-            sigRect.offsetMin = Vector2.zero;
-            sigRect.offsetMax = Vector2.zero;
-
-            // Body content
-            var bodyGO = new GameObject("BodyContent");
-            bodyGO.transform.SetParent(pageGO.transform, false);
-            bodyGO.transform.localScale = Vector3.one;
-            var bodyTmp = bodyGO.AddComponent<TextMeshProUGUI>();
-            bodyTmp.text = "Awaiting instructions...";
-            bodyTmp.fontSize = 16;
-            bodyTmp.color = new Color(0.12f, 0.12f, 0.15f);
-            var bodyTextRect = bodyGO.GetComponent<RectTransform>();
-            bodyTextRect.anchorMin = new Vector2(0.05f, 0.18f);
-            bodyTextRect.anchorMax = new Vector2(0.95f, 0.75f);
-            bodyTextRect.offsetMin = Vector2.zero;
-            bodyTextRect.offsetMax = Vector2.zero;
-
-            // Action prompt
-            var promptGO = new GameObject("ActionPrompt");
-            promptGO.transform.SetParent(pageGO.transform, false);
-            promptGO.transform.localScale = Vector3.one;
-            var promptTmp = promptGO.AddComponent<TextMeshProUGUI>();
-            promptTmp.text = "Thumbs Up to Approve | Thumbs Down to Reject";
-            promptTmp.fontSize = 14;
-            promptTmp.fontStyle = FontStyles.Bold;
-            promptTmp.color = new Color(0.9f, 0.45f, 0.05f);
-            var promptRect = promptGO.GetComponent<RectTransform>();
-            promptRect.anchorMin = new Vector2(0.05f, 0.02f);
-            promptRect.anchorMax = new Vector2(0.95f, 0.15f);
-            promptRect.offsetMin = Vector2.zero;
-            promptRect.offsetMax = Vector2.zero;
-
-            var pageRenderer = pageGO.AddComponent<OutputPageRenderer>();
-            var pageSO = new SerializedObject(pageRenderer);
-            pageSO.FindProperty("headerTitleText").objectReferenceValue = titleTmp;
-            pageSO.FindProperty("agentSignatureText").objectReferenceValue = sigTmp;
-            pageSO.FindProperty("bodyContentText").objectReferenceValue = bodyTmp;
-            pageSO.FindProperty("actionPromptText").objectReferenceValue = promptTmp;
-            pageSO.FindProperty("statusBanner").objectReferenceValue = bannerImg;
-            pageSO.FindProperty("worldCanvas").objectReferenceValue = pageCanvas;
-            pageSO.ApplyModifiedProperties();
-
-            pageGO.SetActive(false); // Hidden by default until presenting
-
-            // ── 8. Navigation & Interaction Components ─────────────────────────
-            var nav = agentGO.AddComponent<NavMeshAgent>();
-            nav.height = 1.55f;
-            nav.radius = 0.22f;
-            nav.speed = 2.2f;
-            nav.angularSpeed = 240f;
-            nav.acceleration = 8f;
-            nav.stoppingDistance = 0.3f;
-
-            var col = agentGO.AddComponent<CapsuleCollider>();
-            col.height = 1.55f;
-            col.radius = 0.22f;
-            col.center = new Vector3(0, 0.775f, 0);
-
-            // AgentController
-            var controller = agentGO.AddComponent<AgentController>();
-            var ctlSO = new SerializedObject(controller);
-            ctlSO.FindProperty("navAgent").objectReferenceValue = nav;
-            ctlSO.FindProperty("statusTag").objectReferenceValue = statusTagUI;
-            ctlSO.FindProperty("outputPage").objectReferenceValue = pageRenderer;
-            ctlSO.FindProperty("pageHoldPoint").objectReferenceValue = pageHold.transform;
-            ctlSO.ApplyModifiedProperties();
-
-            // AgentGrabInteractable for picking up agents & rearranging
-            var grab = agentGO.AddComponent<AgentGrabInteractable>();
-            var grabSO = new SerializedObject(grab);
-            grabSO.FindProperty("agentController").objectReferenceValue = controller;
-            grabSO.FindProperty("agentRenderer").objectReferenceValue = body.GetComponent<MeshRenderer>();
-            grabSO.ApplyModifiedProperties();
-
-            // ── 9. Save as Prefab ──────────────────────────────────────────────
-            // Enforce (1, 1, 1) scale on every object under every canvas in prefab
-            var allCanvases = agentGO.GetComponentsInChildren<Canvas>(true);
-            foreach (var c in allCanvases)
+            Transform Leg(string n, float x)
             {
-                var allTransforms = c.GetComponentsInChildren<Transform>(true);
-                foreach (var t in allTransforms)
-                {
-                    if (t != c.transform)
-                    {
-                        t.localScale = Vector3.one;
-                    }
-                }
+                var pivot = Empty(n, body.transform, new Vector3(x, 0.92f, 0f)).transform;
+                Capsule($"{n}_Mesh", pivot, new Vector3(0f, -0.45f, 0f), new Vector3(0.15f, 0.45f, 0.15f), trousers);
+                Box($"{n}_Shoe", pivot, new Vector3(0f, -0.88f, 0.05f), new Vector3(0.13f, 0.07f, 0.24f), visor, false);
+                return pivot;
             }
+            Transform legL = Leg("LegL", -0.1f);
+            Transform legR = Leg("LegR", 0.1f);
 
-            const string prefabFolder = "Assets/Prefabs";
-            if (!AssetDatabase.IsValidFolder(prefabFolder))
-                AssetDatabase.CreateFolder("Assets", "Prefabs");
+            var torso = Capsule("Torso", body.transform, new Vector3(0f, 1.23f, 0f), new Vector3(0.38f, 0.34f, 0.25f), shirt);
+            var collar = Box("Collar", body.transform, new Vector3(0f, 1.5f, 0.0f), new Vector3(0.22f, 0.05f, 0.16f), accent, false);
+            var badge = Box("Badge", body.transform, new Vector3(0.09f, 1.36f, 0.122f), new Vector3(0.07f, 0.05f, 0.01f), accent, false);
 
-            string prefabPath = $"{prefabFolder}/AgentNPC.prefab";
-            var prefab = PrefabUtility.SaveAsPrefabAsset(agentGO, prefabPath);
-            Object.DestroyImmediate(agentGO);
-
-            if (prefab != null)
+            Transform Arm(string n, float x)
             {
-                AssetDatabase.SaveAssets();
-                AssetDatabase.Refresh();
-                Debug.Log($"[AgentPrefabSetup] ✅ Complete AgentNPC prefab saved to {prefabPath}");
-                Selection.activeObject = prefab;
+                var pivot = Empty(n, body.transform, new Vector3(x, 1.45f, 0f)).transform;
+                Capsule($"{n}_Mesh", pivot, new Vector3(0f, -0.27f, 0f), new Vector3(0.1f, 0.27f, 0.1f), shirt);
+                Ball($"{n}_Hand", pivot, new Vector3(0f, -0.56f, 0f), Vector3.one * 0.09f, skin);
+                return pivot;
             }
-            else
+            Transform armL = Arm("ArmL", -0.25f);
+            Transform armR = Arm("ArmR", 0.25f);
+
+            var head = Empty("Head", body.transform, new Vector3(0f, 1.56f, 0f)).transform;
+            Capsule("Neck", head, new Vector3(0f, 0.02f, 0f), new Vector3(0.09f, 0.05f, 0.09f), skin);
+            Ball("Skull", head, new Vector3(0f, 0.16f, 0f), new Vector3(0.25f, 0.27f, 0.25f), skin);
+            Box("Visor", head, new Vector3(0f, 0.18f, 0.105f), new Vector3(0.2f, 0.06f, 0.06f), visor, false);
+            var antenna = Ball("Antenna", head, new Vector3(0f, 0.33f, 0f), Vector3.one * 0.06f, accent);
+
+            var hold = Empty("HoldPoint", body.transform, new Vector3(0f, 1.02f, 0.36f), new Vector3(30f, 180f, 0f)).transform;
+
+            var avatar = visual.AddComponent<AgentAvatar>();
+            Wire(avatar, "body", body.transform);
+            Wire(avatar, "legL", legL);
+            Wire(avatar, "legR", legR);
+            Wire(avatar, "armL", armL);
+            Wire(avatar, "armR", armR);
+            Wire(avatar, "head", head);
+            Wire(avatar, "holdPoint", hold);
+            WireArray(avatar, "shirtRenderers", new Object[]
             {
-                Debug.LogError("[AgentPrefabSetup] Failed to save prefab!");
-            }
+                torso.GetComponent<Renderer>(), armL.GetChild(0).GetComponent<Renderer>(), armR.GetChild(0).GetComponent<Renderer>()
+            });
+            WireArray(avatar, "accentRenderers", new Object[]
+            {
+                collar.GetComponent<Renderer>(), badge.GetComponent<Renderer>(), antenna.GetComponent<Renderer>()
+            });
+
+            var selection = Cyl("SelectionRing", root.transform, new Vector3(0f, 0.012f, 0f), 0.5f, 0.012f, ring, false);
+            NoShadows(selection);
+
+            // ── Head tag ─────────────────────────────────────────────────────
+            var tag = BuildStatusTag(root.transform);
+
+            // ── Carried page ─────────────────────────────────────────────────
+            var page = BuildPage(hold);
+
+            // ── Components ───────────────────────────────────────────────────
+            var nav = root.AddComponent<NavMeshAgent>();
+            nav.radius = 0.28f;
+            nav.height = 1.8f;
+            nav.speed = 1.5f;
+            nav.angularSpeed = 600f;
+            nav.acceleration = 10f;
+            nav.stoppingDistance = 0.05f;
+            nav.autoBraking = true;
+            nav.obstacleAvoidanceType = ObstacleAvoidanceType.MedQualityObstacleAvoidance;
+            nav.enabled = false;
+
+            var col = root.AddComponent<CapsuleCollider>();
+            col.center = new Vector3(0f, 0.9f, 0f);
+            col.height = 1.8f;
+            col.radius = 0.3f;
+
+            var controller = root.AddComponent<AgentController>();
+            Wire(controller, "avatar", avatar);
+            Wire(controller, "statusTag", tag);
+            Wire(controller, "page", page);
+            Wire(controller, "selectionRing", selection);
+
+            var drag = root.AddComponent<FloorDragInteractable>();
+            Wire(drag, "agent", controller);
+
+            if (!AssetDatabase.IsValidFolder("Assets/Prefabs")) AssetDatabase.CreateFolder("Assets", "Prefabs");
+            var prefab = PrefabUtility.SaveAsPrefabAsset(root, PrefabPath);
+            Object.DestroyImmediate(root);
+            AssetDatabase.SaveAssets();
+            Debug.Log($"[AgentPrefabSetup] Saved {PrefabPath}");
+            return prefab;
         }
 
-        private static void SetMaterialURP(GameObject go, Color color)
+        private static StatusTagUI BuildStatusTag(Transform parent)
         {
-            var renderer = go.GetComponent<Renderer>();
-            if (renderer == null) return;
-            var shader = Shader.Find("Universal Render Pipeline/Lit")
-                      ?? Shader.Find("Standard");
-            if (shader == null) return;
-            var mat = new Material(shader) { color = color };
-            renderer.sharedMaterial = mat;
+            var canvas = WorldCanvas("StatusTag", parent, new Vector3(0f, 2.1f, 0f), Vector3.zero, new Vector2(440f, 150f), 0.001f);
+            Transform t = canvas.transform;
+            Panel("Background", t, Vector2.zero, new Vector2(440f, 150f), new Color(0.09f, 0.10f, 0.13f, 0.93f));
+            var accentBar = Panel("Accent", t, new Vector2(-208f, 0f), new Vector2(12f, 126f), Color.white);
+            var name = Text("Name", t, "Agent", 50f, Palette.UiText, new Vector2(-30f, 34f), new Vector2(330f, 64f), TextAlignmentOptions.Left, true);
+            var role = Text("Role", t, "Role", 26f, Palette.UiMuted, new Vector2(118f, 34f), new Vector2(170f, 40f), TextAlignmentOptions.Right);
+            var pill = Panel("Pill", t, new Vector2(-88f, -36f), new Vector2(214f, 50f), Color.green);
+            var status = Text("Status", pill.transform, "FREE", 26f, new Color(0.07f, 0.08f, 0.1f), Vector2.zero, new Vector2(214f, 50f), TextAlignmentOptions.Center, true);
+            var detail = Text("Detail", t, "", 24f, Palette.UiMuted, new Vector2(116f, -36f), new Vector2(190f, 50f), TextAlignmentOptions.Left);
+            detail.enableAutoSizing = true;
+            detail.fontSizeMin = 16f;
+            detail.fontSizeMax = 24f;
+
+            var ui = canvas.gameObject.AddComponent<StatusTagUI>();
+            Wire(ui, "pill", pill);
+            Wire(ui, "accentBar", accentBar);
+            Wire(ui, "nameText", name);
+            Wire(ui, "roleText", role);
+            Wire(ui, "statusText", status);
+            Wire(ui, "detailText", detail);
+            return ui;
+        }
+
+        public static OutputPage BuildPage(Transform hold)
+        {
+            var canvas = WorldCanvas("Page", hold, Vector3.zero, Vector3.zero, new Vector2(500f, 660f), 0.00085f);
+            Transform t = canvas.transform;
+            Panel("Paper", t, Vector2.zero, new Vector2(500f, 660f), Palette.Paper);
+            var header = Panel("Header", t, new Vector2(0f, 312f), new Vector2(500f, 36f), Palette.Amber);
+            var title = Text("Title", t, "Task", 34f, new Color(0.12f, 0.13f, 0.15f), new Vector2(0f, 258f), new Vector2(450f, 56f), TextAlignmentOptions.Left, true);
+            title.enableAutoSizing = true; title.fontSizeMin = 24f; title.fontSizeMax = 38f;
+            var meta = Text("Meta", t, "", 21f, new Color(0.38f, 0.40f, 0.44f), new Vector2(0f, 222f), new Vector2(450f, 30f));
+            Panel("Rule", t, new Vector2(0f, 202f), new Vector2(450f, 2f), new Color(0.82f, 0.80f, 0.76f), false);
+            var bodyText = Text("Body", t, "", 22f, new Color(0.14f, 0.15f, 0.17f), new Vector2(0f, -30f), new Vector2(450f, 440f), TextAlignmentOptions.TopLeft);
+            bodyText.enableAutoSizing = true; bodyText.fontSizeMin = 16f; bodyText.fontSizeMax = 28f;
+            bodyText.lineSpacing = 4f;
+            Panel("PromptBand", t, new Vector2(0f, -294f), new Vector2(480f, 52f), new Color(0.90f, 0.88f, 0.84f));
+            var prompt = Text("Prompt", t, "", 19f, new Color(0.30f, 0.32f, 0.36f), new Vector2(0f, -294f), new Vector2(460f, 48f), TextAlignmentOptions.Center, true);
+
+            var page = canvas.gameObject.AddComponent<OutputPage>();
+            Wire(page, "titleText", title);
+            Wire(page, "metaText", meta);
+            Wire(page, "bodyText", bodyText);
+            Wire(page, "promptText", prompt);
+            Wire(page, "headerBar", header);
+            return page;
         }
     }
 }

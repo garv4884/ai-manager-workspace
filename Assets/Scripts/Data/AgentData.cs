@@ -3,80 +3,91 @@ using UnityEngine;
 
 namespace AIManagerWorkspace
 {
+    /// <summary>
+    /// What the agent needs from the manager. This is what the head tag shows,
+    /// and it does not change while the agent walks around or waits in line.
+    /// </summary>
     public enum AgentStatus
     {
         Free,
         Working,
         WaitingForApproval,
         WaitingForInput,
-        Walking,
-        InQueue,
-        Presenting,
         Error
     }
 
-    [System.Serializable]
+    /// <summary>
+    /// Where the agent physically is, kept apart from <see cref="AgentStatus"/> so that
+    /// walking to the queue never hides "waiting for your input".
+    /// </summary>
+    public enum AgentActivity
+    {
+        AtDesk,
+        WalkingToDesk,
+        WalkingToQueue,
+        InQueue,
+        Presenting,
+        InMeeting,
+        WalkingToMeeting
+    }
+
+    [Serializable]
     public class AgentData
     {
         public string agentId;
         public string agentName;
         public string agentRole;
-        public AgentStatus currentStatus = AgentStatus.Free;
-        [TextArea(2, 5)]
-        public string currentTaskDescription;
-        [TextArea(3, 8)]
-        public string currentOutput;
-        public int deskIndex = -1;
+        public Color accentColor = Color.white;
+        public AgentStatus status = AgentStatus.Free;
+        public AgentActivity activity = AgentActivity.AtDesk;
+        public int queuePosition = -1;
+        public int completedTasks;
 
-        public AgentData()
+        public AgentData(string name, string role, Color accent)
         {
-            agentId = System.Guid.NewGuid().ToString();
-            currentStatus = AgentStatus.Free;
-            currentTaskDescription = "Awaiting assignment";
-            currentOutput = string.Empty;
-        }
-
-        public AgentData(string id, string name, string role, int desk = -1)
-        {
-            agentId = id;
+            agentId = Guid.NewGuid().ToString("N");
             agentName = name;
             agentRole = role;
-            currentStatus = AgentStatus.Free;
-            currentTaskDescription = "Awaiting assignment";
-            currentOutput = string.Empty;
-            deskIndex = desk;
+            accentColor = accent;
         }
 
-        public Color GetStatusColor()
-        {
-            return currentStatus switch
-            {
-                AgentStatus.Free => new Color(0.2f, 0.85f, 0.3f),          // Bright Green
-                AgentStatus.Working => new Color(0.2f, 0.6f, 1.0f),       // Vibrant Blue
-                AgentStatus.WaitingForApproval => new Color(1.0f, 0.65f, 0.0f), // Orange
-                AgentStatus.WaitingForInput => new Color(0.95f, 0.9f, 0.15f),  // Yellow
-                AgentStatus.Walking => new Color(0.7f, 0.4f, 0.9f),       // Purple
-                AgentStatus.InQueue => new Color(0.9f, 0.5f, 0.8f),       // Magenta
-                AgentStatus.Presenting => new Color(0.1f, 1.0f, 0.9f),    // Cyan
-                AgentStatus.Error => new Color(0.95f, 0.2f, 0.2f),         // Red
-                _ => Color.white
-            };
-        }
+        public bool NeedsManager =>
+            status == AgentStatus.WaitingForApproval ||
+            status == AgentStatus.WaitingForInput ||
+            status == AgentStatus.Error;
 
-        public string GetStatusDisplayString()
+        public Color StatusColor => ColorFor(status);
+
+        public static Color ColorFor(AgentStatus s) => s switch
         {
-            return currentStatus switch
-            {
-                AgentStatus.Free => "Free",
-                AgentStatus.Working => "Working...",
-                AgentStatus.WaitingForApproval => "Waiting for Approval",
-                AgentStatus.WaitingForInput => "Waiting for Input",
-                AgentStatus.Walking => "On the Move",
-                AgentStatus.InQueue => "In Queue",
-                AgentStatus.Presenting => "Reviewing with Manager",
-                AgentStatus.Error => "Blocked / Error",
-                _ => "Unknown"
-            };
-        }
+            AgentStatus.Free => new Color(0.30f, 0.82f, 0.45f),
+            AgentStatus.Working => new Color(0.30f, 0.62f, 1.00f),
+            AgentStatus.WaitingForApproval => new Color(1.00f, 0.62f, 0.15f),
+            AgentStatus.WaitingForInput => new Color(1.00f, 0.86f, 0.20f),
+            AgentStatus.Error => new Color(0.95f, 0.28f, 0.28f),
+            _ => Color.white
+        };
+
+        public string StatusLabel => status switch
+        {
+            AgentStatus.Free => "FREE",
+            AgentStatus.Working => "WORKING",
+            AgentStatus.WaitingForApproval => "NEEDS APPROVAL",
+            AgentStatus.WaitingForInput => "NEEDS INPUT",
+            AgentStatus.Error => "BLOCKED",
+            _ => "?"
+        };
+
+        public string ActivityLabel => activity switch
+        {
+            AgentActivity.AtDesk => status == AgentStatus.Free ? "At desk" : "",
+            AgentActivity.WalkingToDesk => "Returning to desk",
+            AgentActivity.WalkingToQueue => "Walking to you",
+            AgentActivity.InQueue => queuePosition >= 0 ? $"#{queuePosition + 1} in line" : "In line",
+            AgentActivity.Presenting => "Presenting to you",
+            AgentActivity.InMeeting => "In group discussion",
+            AgentActivity.WalkingToMeeting => "Heading to discussion",
+            _ => ""
+        };
     }
 }

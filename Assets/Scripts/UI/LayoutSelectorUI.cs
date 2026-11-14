@@ -1,146 +1,52 @@
-using System.Collections;
+using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
-using TMPro;
 
 namespace AIManagerWorkspace
 {
+    /// <summary>Desk panel: layout templates, group discussion, auto-tasks and MR toggle.</summary>
     public class LayoutSelectorUI : MonoBehaviour
     {
-        [SerializeField] private WorkspaceLayoutManager layoutManager;
-        [SerializeField] private Button[] layoutButtons; // 6 buttons, one per LayoutType
-        [SerializeField] private TextMeshProUGUI currentLayoutLabel;
-        [SerializeField] private CanvasGroup panelGroup;
-        [SerializeField] private float fadeDuration = 0.25f;
+        [SerializeField] private Button[] layoutButtons;      // index == (int)LayoutType
+        [SerializeField] private Image[] layoutHighlights;
+        [SerializeField] private TextMeshProUGUI currentLabel;
+        [SerializeField] private Button meetingButton;
+        [SerializeField] private TextMeshProUGUI meetingLabel;
+        [SerializeField] private Button autoTasksButton;
+        [SerializeField] private TextMeshProUGUI autoTasksLabel;
+        [SerializeField] private Button passthroughButton;
+        [SerializeField] private TextMeshProUGUI passthroughLabel;
+        [SerializeField] private PassthroughToggle passthrough;
 
-        private bool isVisible = false;
-        private Coroutine activeFade;
-
-        private static readonly string[] LayoutNames = new string[]
-        {
-            "Grid", "Circle", "U-Shape", "Hub & Spoke", "Coworking", "War Room"
-        };
+        private static readonly Color Idle = new Color(0.20f, 0.23f, 0.28f);
+        private static readonly Color Active = new Color(0.18f, 0.55f, 0.52f);
 
         private void Start()
         {
-            // Wire up each button to its corresponding LayoutType index
+            GameManager gm = GameManager.Instance;
             for (int i = 0; i < layoutButtons.Length; i++)
             {
-                int index = i; // capture for closure
-                if (layoutButtons[i] != null)
-                    layoutButtons[i].onClick.AddListener(() => OnLayoutButtonPressed(index));
+                var type = (LayoutType)i;
+                layoutButtons[i].onClick.AddListener(() => gm.Layout.ApplyLayout(type));
             }
-
-            // Initialize panel state: visible by default as an in-world desk console
-            if (panelGroup != null)
-            {
-                panelGroup.alpha = 1f;
-                panelGroup.interactable = true;
-                panelGroup.blocksRaycasts = true;
-            }
-
-            gameObject.SetActive(true);
-            isVisible = true;
-
-            UpdateLayoutLabel();
+            meetingButton.onClick.AddListener(() => { gm.Agents.ToggleMeeting(); Refresh(); });
+            autoTasksButton.onClick.AddListener(() => { gm.Dispatcher.AutoDispatch = !gm.Dispatcher.AutoDispatch; Refresh(); });
+            passthroughButton.onClick.AddListener(() => { passthrough.Toggle(); Refresh(); });
+            gm.Layout.Changed += Refresh;
+            Refresh();
         }
 
-        /// <summary>
-        /// Toggles the panel visibility.
-        /// </summary>
-        public void TogglePanel()
+        private void Refresh()
         {
-            if (isVisible)
-                StartFade(false);
-            else
-                StartFade(true);
-        }
+            GameManager gm = GameManager.Instance;
+            LayoutType current = gm.Layout.Current;
+            currentLabel.text = $"Layout: <b>{WorkspaceLayout.DisplayName(current)}</b>";
+            for (int i = 0; i < layoutHighlights.Length; i++)
+                layoutHighlights[i].color = (int)current == i ? Active : Idle;
 
-        private void StartFade(bool fadeIn)
-        {
-            if (activeFade != null)
-                StopCoroutine(activeFade);
-
-            activeFade = StartCoroutine(fadeIn ? FadeIn() : FadeOut());
-        }
-
-        private IEnumerator FadeIn()
-        {
-            isVisible = true;
-            gameObject.SetActive(true);
-
-            if (panelGroup != null)
-            {
-                panelGroup.interactable = true;
-                panelGroup.blocksRaycasts = true;
-
-                float startAlpha = panelGroup.alpha;
-                float elapsed = 0f;
-
-                while (elapsed < fadeDuration)
-                {
-                    elapsed += Time.deltaTime;
-                    panelGroup.alpha = Mathf.Lerp(startAlpha, 1f, Mathf.Clamp01(elapsed / fadeDuration));
-                    yield return null;
-                }
-
-                panelGroup.alpha = 1f;
-            }
-
-            activeFade = null;
-        }
-
-        private IEnumerator FadeOut()
-        {
-            isVisible = false;
-
-            if (panelGroup != null)
-            {
-                panelGroup.interactable = false;
-                panelGroup.blocksRaycasts = false;
-
-                float startAlpha = panelGroup.alpha;
-                float elapsed = 0f;
-
-                while (elapsed < fadeDuration)
-                {
-                    elapsed += Time.deltaTime;
-                    panelGroup.alpha = Mathf.Lerp(startAlpha, 0f, Mathf.Clamp01(elapsed / fadeDuration));
-                    yield return null;
-                }
-
-                panelGroup.alpha = 0f;
-            }
-
-            gameObject.SetActive(false);
-            activeFade = null;
-        }
-
-        /// <summary>
-        /// Called when a layout button is pressed. Applies the layout and closes the panel.
-        /// </summary>
-        public void OnLayoutButtonPressed(int index)
-        {
-            if (layoutManager == null) return;
-
-            LayoutType selectedLayout = (LayoutType)index;
-            layoutManager.ApplyLayout(selectedLayout);
-
-            if (currentLayoutLabel != null)
-            {
-                string labelName = (index >= 0 && index < LayoutNames.Length) ? LayoutNames[index] : selectedLayout.ToString();
-                currentLayoutLabel.text = $"Layout: {labelName}";
-            }
-        }
-
-        private void UpdateLayoutLabel()
-        {
-            if (currentLayoutLabel != null && layoutManager != null)
-            {
-                int idx = (int)layoutManager.GetCurrentLayout();
-                string labelName = (idx >= 0 && idx < LayoutNames.Length) ? LayoutNames[idx] : layoutManager.GetCurrentLayout().ToString();
-                currentLayoutLabel.text = $"Layout: {labelName}";
-            }
+            meetingLabel.text = gm.Agents.MeetingActive ? "END DISCUSSION" : "GROUP DISCUSSION";
+            autoTasksLabel.text = gm.Dispatcher.AutoDispatch ? "AUTO TASKS: ON" : "AUTO TASKS: OFF";
+            passthroughLabel.text = passthrough != null && passthrough.IsMixedReality ? "VIRTUAL OFFICE" : "MIXED REALITY";
         }
     }
 }

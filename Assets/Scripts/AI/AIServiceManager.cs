@@ -7,318 +7,183 @@ using UnityEngine.Networking;
 namespace AIManagerWorkspace
 {
     /// <summary>
-    /// Handles HTTP calls to the Claude or OpenAI APIs via UnityWebRequest.
-    /// Wire up events to receive responses or errors per agent.
+    /// Runs one unit of agent work: either a live Claude call (raw HTTP; the official
+    /// Anthropic SDK is not usable from a Quest IL2CPP build) or an offline simulation.
+    ///
+    /// Config is read from (first match wins):
+    ///   1. Application.persistentDataPath/config.json  (on Quest: /sdcard/Android/data/&lt;package&gt;/files/)
+    ///   2. StreamingAssets/config.json                  (do not ship real keys inside an APK)
+    /// Format: { "apiKey": "...", "model": "claude-opus-5-5" }
     /// </summary>
     public class AIServiceManager : MonoBehaviour
     {
-        // ── Provider enum ─────────────────────────────────────────────────────
-        public enum AIProvider { Claude, OpenAI }
+        [Header("Claude API")]
+        [SerializeField] private string apiEndpoint = "https://api.anthropic.com/v1/messages";
+        [SerializeField] private string model = "claude-opus-5-5";
+        [SerializeField] private string effort = "low";
+        [SerializeField] private int maxTokens = 2048;
+        [SerializeField] private int requestTimeoutSeconds = 60;
 
-        // ── Inspector ─────────────────────────────────────────────────────────
-        [Header("Provider Settings")]
-        [SerializeField] private AIProvider provider        = AIProvider.Claude;
-        [SerializeField] private string     apiEndpoint     = "https://api.anthropic.com/v1/messages";
-        [SerializeField] private string     defaultModel    = "claude-opus-4-5";
-        [SerializeField] private int        maxTokens       = 1024;
-        [SerializeField] private float      requestTimeout  = 30f;
+        [Header("Offline simulation")]
+        [SerializeField] private Vector2 simulatedWorkSeconds = new Vector2(5f, 10f);
 
-        /// <summary>API key — set at runtime via SetApiKey(); hidden in Inspector to avoid accidental exposure.</summary>
-        [HideInInspector] public string apiKey = "";
+        private string apiKey = "";
 
-        // ── Events ────────────────────────────────────────────────────────────
-        /// <summary>Fired when a successful response is received. (agentId, responseText)</summary>
-        public event Action<string, string> OnResponseReceived;
+        public bool IsLive => !string.IsNullOrEmpty(apiKey);
+        public string ModeLabel => IsLive ? $"LIVE AI  {model}" : "OFFLINE SIMULATION";
+        public Vector2 SimulatedWorkSeconds => simulatedWorkSeconds;
 
-        /// <summary>Fired when a request fails. (agentId, errorMessage)</summary>
-        public event Action<string, string> OnRequestError;
+        [Serializable] private class ConfigData { public string apiKey; public string model; }
 
-        [Serializable]
-        private class ConfigData
+        // ── Request / response shapes for JsonUtility ──────────────────────────
+        [Serializable] private class Msg { public string role; public string content; }
+        [Serializable] private class OutputConfig { public string effort; }
+        [Serializable] private class Request
         {
-            public string provider;
-            public string apiKey;
             public string model;
+            public int max_tokens;
+            public string system;
+            public Msg[] messages;
+            public OutputConfig output_config;
+            public string fallbacks = "default";
+        }
+        [Serializable] private class Block { public string type; public string text; }
+        [Serializable] private class Response { public Block[] content; public string stop_reason; }
+
+        private void Awake()
+        {
+            StartCoroutine(LoadConfig());
         }
 
-        private void Start()
-        {
-            LoadConfigFromStreamingAssets();
-        }
+        public void SetApiKey(string key) => apiKey = key?.Trim() ?? "";
 
-        public void LoadConfigFromStreamingAssets()
+        private IEnumerator LoadConfig()
         {
-            string configPath = System.IO.Path.Combine(Application.streamingAssetsPath, "config.json");
-            if (System.IO.File.Exists(configPath))
+            string persistent = System.IO.Path.Combine(Application.persistentDataPath, "config.json");
+            string json = null;
+            if (System.IO.File.Exists(persistent))
             {
-                try
-                {
-                    string json = System.IO.File.ReadAllText(configPath);
-                    var config = JsonUtility.FromJson<ConfigData>(json);
-                    if (config != null)
-                    {
-                        if (!string.IsNullOrEmpty(config.apiKey))
-                        {
-                            apiKey = config.apiKey.Trim();
-                            Debug.Log("[AIServiceManager] Loaded API key from StreamingAssets/config.json");
-                        }
-                        if (!string.IsNullOrEmpty(config.provider))
-                        {
-                            if (Enum.TryParse<AIProvider>(config.provider, true, out var prov))
-                                SetProvider(prov);
-                        }
-                        if (!string.IsNullOrEmpty(config.model))
-                        {
-                            defaultModel = config.model;
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogWarning($"[AIServiceManager] Could not read config.json: {ex.Message}");
-                }
-            }
-        }
-
-        // ── Public API ────────────────────────────────────────────────────────
-
-        /// <summary>Sets the API key used for all subsequent requests.</summary>
-        public void SetApiKey(string key)
-        {
-            apiKey = key;
-        }
-
-        /// <summary>Switches the provider and optionally overrides the endpoint URL.</summary>
-        public void SetProvider(AIProvider prov, string endpoint = null)
-        {
-            provider = prov;
-
-            if (!string.IsNullOrEmpty(endpoint))
-            {
-                apiEndpoint = endpoint;
+                json = System.IO.File.ReadAllText(persistent);
             }
             else
             {
-                // Reset to sensible defaults when no explicit endpoint is given
-                apiEndpoint = prov == AIProvider.Claude
-                    ? "https://api.anthropic.com/v1/messages"
-                    : "https://api.openai.com/v1/chat/completions";
+                string streaming = System.IO.Path.Combine(Application.streamingAssetsPath, "config.json");
+                if (streaming.Contains("://"))
+                {
+                    using var req = UnityWebRequest.Get(streaming);   // Android: inside the APK
+                    yield return req.SendWebRequest();
+                    if (req.result == UnityWebRequest.Result.Success) json = req.downloadHandler.text;
+                }
+                else if (System.IO.File.Exists(streaming))
+                {
+                    json = System.IO.File.ReadAllText(streaming);
+                }
             }
-        }
 
-        /// <summary>
-        /// Sends a request to the configured AI provider.
-        /// Responses arrive via <see cref="OnResponseReceived"/> or <see cref="OnRequestError"/>.
-        /// </summary>
-        public void SendRequest(string agentId, string systemPrompt, string userMessage)
-        {
-            if (string.IsNullOrEmpty(apiKey))
+            if (string.IsNullOrEmpty(json)) yield break;
+            try
             {
-                Debug.LogError("[AIServiceManager] API key is not set.");
-                OnRequestError?.Invoke(agentId, "API key not set.");
-                return;
+                var cfg = JsonUtility.FromJson<ConfigData>(json);
+                if (cfg != null)
+                {
+                    if (!string.IsNullOrWhiteSpace(cfg.apiKey)) apiKey = cfg.apiKey.Trim();
+                    if (!string.IsNullOrWhiteSpace(cfg.model)) model = cfg.model.Trim();
+                }
+                Debug.Log($"[AIService] Config loaded. Mode: {ModeLabel}");
             }
-
-            if (provider == AIProvider.Claude)
-                StartCoroutine(SendClaudeRequest(agentId, systemPrompt, userMessage));
-            else
-                StartCoroutine(SendOpenAIRequest(agentId, systemPrompt, userMessage));
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[AIService] Could not parse config.json: {e.Message}");
+            }
         }
 
-        // ── Coroutines ────────────────────────────────────────────────────────
-
-        private IEnumerator SendClaudeRequest(string agentId, string system, string user)
+        /// <summary>Starts work for <paramref name="task"/>; <paramref name="onDone"/> fires once.</summary>
+        public void RequestWork(AgentData agent, TaskData task, Action<AIResult> onDone)
         {
-            string payload = BuildClaudePayload(system, user);
-            byte[] bodyRaw = Encoding.UTF8.GetBytes(payload);
+            if (IsLive) StartCoroutine(SendClaude(agent, task, onDone));
+            else onDone?.Invoke(TaskLibrary.Simulate(agent, task));
+        }
 
-            using UnityWebRequest request = new UnityWebRequest(apiEndpoint, "POST");
-            request.uploadHandler   = new UploadHandlerRaw(bodyRaw);
+        private IEnumerator SendClaude(AgentData agent, TaskData task, Action<AIResult> onDone)
+        {
+            bool mayAsk = !task.HasAskedQuestion && task.revision == 1;
+            string system =
+                $"You are {agent.agentName}, an AI agent whose role is {agent.agentRole}, working for a manager " +
+                "who reviews your work on a floating page in VR. Keep every reply under 140 words, in plain text " +
+                "with short lines (no markdown tables). " +
+                (mayAsk
+                    ? "If the task is too ambiguous to do well, reply with exactly one line starting with 'QUESTION:' " +
+                      "and ask one clarifying question. Otherwise reply with a short plan or deliverable for approval."
+                    : "Do not ask questions. Reply with the finished deliverable.");
+
+            var sb = new StringBuilder();
+            sb.Append("Task: ").Append(task.title).Append('\n').Append(task.description);
+            if (task.HasAskedQuestion) sb.Append("\n\nYou asked: ").Append(task.question).Append("\nManager answered: ").Append(task.answer);
+            if (task.revision > 1)
+            {
+                sb.Append("\n\nThe manager asked for changes to your previous version:\n").Append(task.output);
+                if (!string.IsNullOrEmpty(task.feedback)) sb.Append("\nFeedback: ").Append(task.feedback);
+            }
+
+            var body = new Request
+            {
+                model = model,
+                max_tokens = maxTokens,
+                system = system,
+                messages = new[] { new Msg { role = "user", content = sb.ToString() } },
+                output_config = new OutputConfig { effort = effort }
+            };
+
+            using var request = new UnityWebRequest(apiEndpoint, "POST");
+            request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(JsonUtility.ToJson(body)));
             request.downloadHandler = new DownloadHandlerBuffer();
-            request.timeout         = Mathf.RoundToInt(requestTimeout);
-
-            request.SetRequestHeader("Content-Type",       "application/json");
-            request.SetRequestHeader("x-api-key",          apiKey);
-            request.SetRequestHeader("anthropic-version",  "2023-06-01");
+            request.timeout = requestTimeoutSeconds;
+            request.SetRequestHeader("content-type", "application/json");
+            request.SetRequestHeader("x-api-key", apiKey);
+            request.SetRequestHeader("anthropic-version", "2023-06-01");
+            request.SetRequestHeader("anthropic-beta", "server-side-fallback-2026-07-01");
 
             yield return request.SendWebRequest();
 
-            if (request.result == UnityWebRequest.Result.Success)
+            if (request.result != UnityWebRequest.Result.Success)
             {
-                string responseText = ParseClaudeResponse(request.downloadHandler.text);
-                if (responseText != null)
-                    OnResponseReceived?.Invoke(agentId, responseText);
-                else
-                    OnRequestError?.Invoke(agentId, "Failed to parse Claude response: " + request.downloadHandler.text);
+                string err = $"HTTP {request.responseCode}: {request.error}";
+                Debug.LogError($"[AIService] {err}\n{request.downloadHandler.text}");
+                onDone?.Invoke(AIResult.Failure(err));
+                yield break;
             }
+
+            Response resp = null;
+            try { resp = JsonUtility.FromJson<Response>(request.downloadHandler.text); }
+            catch (Exception e) { Debug.LogError($"[AIService] Parse error: {e.Message}"); }
+
+            if (resp == null)
+            {
+                onDone?.Invoke(AIResult.Failure("Could not read the response."));
+                yield break;
+            }
+            if (resp.stop_reason == "refusal")
+            {
+                onDone?.Invoke(AIResult.Failure("The model declined this task."));
+                yield break;
+            }
+
+            var text = new StringBuilder();
+            if (resp.content != null)
+                foreach (var block in resp.content)
+                    if (block != null && block.type == "text") text.Append(block.text);
+
+            string result = text.ToString().Trim();
+            if (string.IsNullOrEmpty(result))
+            {
+                onDone?.Invoke(AIResult.Failure("Empty response."));
+                yield break;
+            }
+
+            if (mayAsk && result.StartsWith("QUESTION:", StringComparison.OrdinalIgnoreCase))
+                onDone?.Invoke(AIResult.Question(result.Substring("QUESTION:".Length).Trim()));
             else
-            {
-                string error = $"[Claude] HTTP {request.responseCode}: {request.error} — {request.downloadHandler.text}";
-                Debug.LogError($"[AIServiceManager] {error}");
-                OnRequestError?.Invoke(agentId, error);
-            }
-        }
-
-        private IEnumerator SendOpenAIRequest(string agentId, string system, string user)
-        {
-            string payload = BuildOpenAIPayload(system, user);
-            byte[] bodyRaw = Encoding.UTF8.GetBytes(payload);
-
-            using UnityWebRequest request = new UnityWebRequest(apiEndpoint, "POST");
-            request.uploadHandler   = new UploadHandlerRaw(bodyRaw);
-            request.downloadHandler = new DownloadHandlerBuffer();
-            request.timeout         = Mathf.RoundToInt(requestTimeout);
-
-            request.SetRequestHeader("Content-Type",  "application/json");
-            request.SetRequestHeader("Authorization", "Bearer " + apiKey);
-
-            yield return request.SendWebRequest();
-
-            if (request.result == UnityWebRequest.Result.Success)
-            {
-                string responseText = ParseOpenAIResponse(request.downloadHandler.text);
-                if (responseText != null)
-                    OnResponseReceived?.Invoke(agentId, responseText);
-                else
-                    OnRequestError?.Invoke(agentId, "Failed to parse OpenAI response: " + request.downloadHandler.text);
-            }
-            else
-            {
-                string error = $"[OpenAI] HTTP {request.responseCode}: {request.error} — {request.downloadHandler.text}";
-                Debug.LogError($"[AIServiceManager] {error}");
-                OnRequestError?.Invoke(agentId, error);
-            }
-        }
-
-        // ── Payload Builders ──────────────────────────────────────────────────
-
-        /// <summary>Builds the JSON body for the Anthropic Messages API.</summary>
-        private string BuildClaudePayload(string system, string user)
-        {
-            // Escape special characters in user content
-            string safeSystem = EscapeJson(system);
-            string safeUser   = EscapeJson(user);
-
-            return $@"{{
-  ""model"": ""{defaultModel}"",
-  ""max_tokens"": {maxTokens},
-  ""system"": ""{safeSystem}"",
-  ""messages"": [
-    {{
-      ""role"": ""user"",
-      ""content"": ""{safeUser}""
-    }}
-  ]
-}}";
-        }
-
-        /// <summary>Builds the JSON body for the OpenAI Chat Completions API.</summary>
-        private string BuildOpenAIPayload(string system, string user)
-        {
-            string safeSystem = EscapeJson(system);
-            string safeUser   = EscapeJson(user);
-
-            return $@"{{
-  ""model"": ""{defaultModel}"",
-  ""max_tokens"": {maxTokens},
-  ""messages"": [
-    {{
-      ""role"": ""system"",
-      ""content"": ""{safeSystem}""
-    }},
-    {{
-      ""role"": ""user"",
-      ""content"": ""{safeUser}""
-    }}
-  ]
-}}";
-        }
-
-        // ── Response Parsers ──────────────────────────────────────────────────
-
-        /// <summary>
-        /// Extracts content[0].text from Claude's response JSON.
-        /// Uses lightweight string parsing to avoid JsonUtility limitations with nested arrays.
-        /// </summary>
-        private string ParseClaudeResponse(string json)
-        {
-            // Claude response shape: { "content": [ { "type": "text", "text": "..." } ] }
-            const string textKey = "\"text\":";
-            int textIdx = json.IndexOf(textKey, StringComparison.Ordinal);
-            if (textIdx < 0) return null;
-
-            int start = json.IndexOf('"', textIdx + textKey.Length);
-            if (start < 0) return null;
-            start++; // skip opening quote
-
-            int end = FindJsonStringEnd(json, start);
-            if (end < 0) return null;
-
-            return UnescapeJson(json.Substring(start, end - start));
-        }
-
-        /// <summary>
-        /// Extracts choices[0].message.content from OpenAI's response JSON.
-        /// </summary>
-        private string ParseOpenAIResponse(string json)
-        {
-            // OpenAI response shape: { "choices": [ { "message": { "content": "..." } } ] }
-            const string contentKey = "\"content\":";
-            int contentIdx = json.IndexOf(contentKey, StringComparison.Ordinal);
-            if (contentIdx < 0) return null;
-
-            int start = json.IndexOf('"', contentIdx + contentKey.Length);
-            if (start < 0) return null;
-            start++; // skip opening quote
-
-            int end = FindJsonStringEnd(json, start);
-            if (end < 0) return null;
-
-            return UnescapeJson(json.Substring(start, end - start));
-        }
-
-        // ── JSON Utilities ────────────────────────────────────────────────────
-
-        /// <summary>Escapes a string for safe embedding in a JSON literal.</summary>
-        private static string EscapeJson(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return "";
-            return s.Replace("\\", "\\\\")
-                    .Replace("\"", "\\\"")
-                    .Replace("\n", "\\n")
-                    .Replace("\r", "\\r")
-                    .Replace("\t", "\\t");
-        }
-
-        /// <summary>Reverses basic JSON string escaping.</summary>
-        private static string UnescapeJson(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return "";
-            return s.Replace("\\n",  "\n")
-                    .Replace("\\r",  "\r")
-                    .Replace("\\t",  "\t")
-                    .Replace("\\\"", "\"")
-                    .Replace("\\\\", "\\");
-        }
-
-        /// <summary>
-        /// Finds the index of the closing quote of a JSON string starting at <paramref name="start"/>
-        /// (the character right after the opening quote), respecting backslash escapes.
-        /// Returns -1 if not found.
-        /// </summary>
-        private static int FindJsonStringEnd(string json, int start)
-        {
-            for (int i = start; i < json.Length; i++)
-            {
-                if (json[i] == '\\')
-                {
-                    i++; // skip escaped character
-                    continue;
-                }
-                if (json[i] == '"')
-                    return i;
-            }
-            return -1;
+                onDone?.Invoke(AIResult.Deliverable(result));
         }
     }
 }

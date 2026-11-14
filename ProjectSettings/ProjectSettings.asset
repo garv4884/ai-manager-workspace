@@ -169,9 +169,9 @@ PlayerSettings:
   androidMinAspectRatio: 1
   applicationIdentifier:
     Android: com.garvchopra.aimanagerworkspace
-    Standalone: com.Default-Company.VR-Template
-    VisionOS: com.Default-Company.VR-Template
-    iPhone: com.Default-Company.VR-Template
+    Standalone: com.garvchopra.aimanagerworkspace
+    VisionOS: com.garvchopra.aimanagerworkspace
+    iPhone: com.garvchopra.aimanagerworkspace
   buildNumber:
     Standalone: 0
     VisionOS: 0
@@ -261,7 +261,7 @@ PlayerSettings:
   shaderPrecisionModel: 0
   clonedFromGUID: 14e3da668dfd3496fb0ecd9272fcff02
   templatePackageId: com.unity.template.vr@9.2.3
-  templateDefaultScene: Assets/Scenes/SampleScene.unity
+  templateDefaultScene: Assets/Scenes/AIManagerWorkspace.unity
   useCustomMainManifest: 1
   useCustomLauncherManifest: 0
   useCustomMainGradleTemplate: 0

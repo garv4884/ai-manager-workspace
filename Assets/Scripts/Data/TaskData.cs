@@ -1,13 +1,15 @@
 using System;
-using UnityEngine;
 
 namespace AIManagerWorkspace
 {
+    /// <summary>
+    /// Hint for how the first pass of a task ends. The live AI may still decide to ask
+    /// a question; offline simulation follows the hint.
+    /// </summary>
     public enum TaskType
     {
         NeedsApproval,
-        NeedsTextInput,
-        Autonomous
+        NeedsTextInput
     }
 
     public enum TaskExecutionStatus
@@ -16,49 +18,45 @@ namespace AIManagerWorkspace
         InProgress,
         WaitingForUser,
         Completed,
-        Rejected
+        Cancelled,
+        Failed
     }
 
-    [System.Serializable]
+    [Serializable]
     public class TaskData
     {
         public string taskId;
         public string title;
-        [TextArea(2, 4)]
         public string description;
-        [TextArea(2, 4)]
-        public string userInput;
-        [TextArea(3, 8)]
-        public string outputResult;
         public TaskType type = TaskType.NeedsApproval;
         public TaskExecutionStatus status = TaskExecutionStatus.Pending;
-        [Range(0f, 1f)]
-        public float progress = 0f;
-        public string assignedAgentId;
-        public DateTime createdAt;
-        public DateTime completedAt;
+        public float progress;
 
-        public TaskData()
-        {
-            taskId = Guid.NewGuid().ToString("N")[..8];
-            status = TaskExecutionStatus.Pending;
-            progress = 0f;
-            createdAt = DateTime.UtcNow;
-            userInput = string.Empty;
-            outputResult = string.Empty;
-        }
+        /// <summary>The question the agent asked (when waiting for input).</summary>
+        public string question = "";
+        /// <summary>The manager's answer to <see cref="question"/>.</summary>
+        public string answer = "";
+        /// <summary>Feedback from the latest "request changes".</summary>
+        public string feedback = "";
+        /// <summary>The deliverable / plan shown on the page.</summary>
+        public string output = "";
+        public string error = "";
+        public int revision = 1;
+
+        /// <summary>Offline-simulation content, filled from the task library.</summary>
+        public TaskLibrary.Template template;
+
+        public DateTime createdAt = DateTime.UtcNow;
+        public DateTime completedAt;
 
         public TaskData(string title, string description, TaskType type)
         {
-            taskId = Guid.NewGuid().ToString("N")[..8];
+            taskId = Guid.NewGuid().ToString("N").Substring(0, 8);
             this.title = title;
             this.description = description;
             this.type = type;
-            this.status = TaskExecutionStatus.Pending;
-            this.progress = 0f;
-            this.createdAt = DateTime.UtcNow;
-            this.userInput = string.Empty;
-            this.outputResult = string.Empty;
         }
+
+        public bool HasAskedQuestion => !string.IsNullOrEmpty(question);
     }
 }

@@ -1,231 +1,111 @@
+using System;
 using System.Collections.Generic;
-using System.Linq;
 using UnityEngine;
 
 namespace AIManagerWorkspace
 {
     /// <summary>
-    /// Spawns and manages all AgentController instances in the scene.
-    /// Acts as the registry for all agents and delegates queue requests
-    /// to QueueManager.
+    /// Spawns one agent per workstation, tracks the selected agent, and runs group
+    /// discussions in the meeting room.
     /// </summary>
     public class AgentManager : MonoBehaviour
     {
-        // ─── Inspector Fields ─────────────────────────────────────────────────
-        [Header("Prefab & Layout")]
+        [Serializable]
+        public class Profile
+        {
+            public string name;
+            public string role;
+            public Color color;
+            public Profile(string n, string r, Color c) { name = n; role = r; color = c; }
+        }
+
         [SerializeField] private GameObject agentPrefab;
-        [SerializeField] private Transform[] deskTransforms;
-        [SerializeField] private Transform managerPresentPoint;
+        [SerializeField] private Workstation[] workstations;
+        [SerializeField] private MeetingRoom meetingRoom;
+        [SerializeField] private Profile[] profiles =
+        {
+            new Profile("Claude", "Code Writer", new Color(0.86f, 0.50f, 0.34f)),
+            new Profile("Nova", "Researcher", new Color(0.22f, 0.66f, 0.60f)),
+            new Profile("Iris", "Designer", new Color(0.36f, 0.52f, 0.95f)),
+            new Profile("Atlas", "Data Analyst", new Color(0.60f, 0.42f, 0.86f)),
+            new Profile("Quill", "Copywriter", new Color(0.93f, 0.70f, 0.22f)),
+            new Profile("Probe", "QA Tester", new Color(0.90f, 0.42f, 0.60f)),
+        };
 
-        [Header("Dependencies")]
-        [SerializeField] private QueueManager queueManager;
-        [SerializeField] private AgentDetailPanel agentDetailPanel;
+        private readonly List<AgentController> agents = new List<AgentController>();
 
-        // ─── Private State ────────────────────────────────────────────────────
-        private List<AgentController> agents = new List<AgentController>();
+        public IReadOnlyList<AgentController> Agents => agents;
+        public IReadOnlyList<Workstation> Workstations => workstations;
+        public AgentController Selected { get; private set; }
+        public bool MeetingActive { get; private set; }
 
-        // ─── Unity Lifecycle ──────────────────────────────────────────────────
+        public event Action<AgentController> SelectionChanged;
+        public event Action AnyAgentChanged;
 
         private void Start()
         {
-            // Fallback: resolve QueueManager from GameManager if not assigned
-            if (queueManager == null)
-                queueManager = GameManager.Instance?.QueueManager;
-
-            int count = GameManager.Instance != null
-                ? GameManager.Instance.NumberOfAgents
-                : 6;
-
-            SpawnAgents(count);
-        }
-
-        // ─── Spawning ─────────────────────────────────────────────────────────
-
-        /// <summary>
-        /// Instantiates <paramref name="count"/> agents, one per desk slot.
-        /// Excess agents beyond available desks are skipped.
-        /// </summary>
-        public void SpawnAgents(int count)
-        {
-            if (agentPrefab == null)
+            int count = Mathf.Min(profiles.Length, workstations.Length);
+            for (int i = 0; i < count; i++)
             {
-                Debug.LogError("[AgentManager] agentPrefab is not assigned!");
-                return;
+                Workstation ws = workstations[i];
+                GameObject go = Instantiate(agentPrefab, ws.SeatPoint.position, ws.SeatPoint.rotation);
+                var agent = go.GetComponent<AgentController>();
+                agent.Initialize(new AgentData(profiles[i].name, profiles[i].role, profiles[i].color), ws);
+                agent.Changed += _ => AnyAgentChanged?.Invoke();
+                agents.Add(agent);
             }
+            for (int i = count; i < workstations.Length; i++) workstations[i].gameObject.SetActive(false);
+        }
 
-            string[] names = GameManager.Instance?.AgentNames
-                             ?? new[] { "Claude", "GPT-4", "Gemini", "Llama", "Mistral", "Copilot" };
-            string[] roles = GameManager.Instance?.AgentRoles
-                             ?? new[] { "Code Writer", "Researcher", "Designer", "Analyst", "Writer", "Tester" };
+        public void Select(AgentController agent)
+        {
+            if (Selected == agent) return;
+            if (Selected != null) Selected.SetSelected(false);
+            Selected = agent;
+            if (Selected != null) Selected.SetSelected(true);
+            SelectionChanged?.Invoke(Selected);
+        }
 
-            int spawnCount = Mathf.Min(count,
-                deskTransforms != null ? deskTransforms.Length : 0);
+        public int Count(AgentStatus status)
+        {
+            int n = 0;
+            foreach (var a in agents) if (a.Data.status == status) n++;
+            return n;
+        }
 
-            for (int i = 0; i < spawnCount; i++)
+        // ── Group discussion ──────────────────────────────────────────────────
+
+        public void ToggleMeeting()
+        {
+            if (MeetingActive) EndMeeting();
+            else StartMeeting();
+        }
+
+        /// <summary>Sends every free, seated agent to the discussion table.</summary>
+        public void StartMeeting()
+        {
+            if (meetingRoom == null || MeetingActive) return;
+            MeetingActive = true;
+            int seat = 0;
+            foreach (var a in agents)
             {
-                Transform desk = deskTransforms[i];
-
-                // Spawn at desk position
-                GameObject go = Instantiate(agentPrefab, desk.position, desk.rotation);
-                go.name = $"Agent_{(i < names.Length ? names[i] : $"Agent{i}")}";
-
-                // Enforce (1, 1, 1) scale on every object under every canvas on instantiated agent
-                Canvas[] canvases = go.GetComponentsInChildren<Canvas>(true);
-                foreach (var c in canvases)
-                {
-                    Transform[] allTransforms = c.GetComponentsInChildren<Transform>(true);
-                    foreach (var t in allTransforms)
-                    {
-                        if (t != c.transform)
-                        {
-                            t.localScale = Vector3.one;
-                        }
-                    }
-                }
-
-                AgentController controller = go.GetComponent<AgentController>();
-                if (controller == null)
-                {
-                    Debug.LogError($"[AgentManager] agentPrefab missing AgentController on '{go.name}'.");
-                    continue;
-                }
-
-                // Build data
-                AgentData agentData = new AgentData
-                {
-                    agentId = System.Guid.NewGuid().ToString(),
-                    agentName = i < names.Length ? names[i] : $"Agent{i}",
-                    agentRole = i < roles.Length ? roles[i] : "Assistant",
-                    currentStatus = AgentStatus.Free
-                };
-
-                controller.Initialize(agentData, desk, managerPresentPoint);
-                agents.Add(controller);
+                if (seat >= meetingRoom.SeatCount) break;
+                if (!a.CanTakeTask) continue;
+                a.GoToMeeting(meetingRoom.GetSeat(seat++));
             }
-
-            Debug.Log($"[AgentManager] Spawned {agents.Count} agent(s).");
+            AnyAgentChanged?.Invoke();
         }
 
-        // ─── Queries ──────────────────────────────────────────────────────────
-
-        /// <summary>Returns the first agent whose status is Free, or null.</summary>
-        public AgentController GetFreeAgent()
+        public void EndMeeting()
         {
-            return agents.FirstOrDefault(a =>
-                a != null && a.Data?.currentStatus == AgentStatus.Free);
-        }
-
-        /// <summary>Returns all agents whose status matches <paramref name="status"/>.</summary>
-        public List<AgentController> GetAgentsByStatus(AgentStatus status)
-        {
-            return agents
-                .Where(a => a != null && a.Data?.currentStatus == status)
-                .ToList();
-        }
-
-        /// <summary>Returns the agent whose AgentData.agentId matches <paramref name="id"/>.</summary>
-        public AgentController GetAgentById(string id)
-        {
-            return agents.FirstOrDefault(a =>
-                a != null && a.Data?.agentId == id);
-        }
-
-        // ─── Queue ────────────────────────────────────────────────────────────
-
-        /// <summary>
-        /// Tells QueueManager to add this agent to the queue so they can
-        /// present their work to the manager.
-        /// </summary>
-        public void RequestQueue(AgentController agent)
-        {
-            if (queueManager == null)
+            if (!MeetingActive) return;
+            MeetingActive = false;
+            foreach (var a in agents)
             {
-                Debug.LogWarning("[AgentManager] QueueManager is null; cannot enqueue agent.");
-                return;
+                if (a.Data.activity == AgentActivity.InMeeting || a.Data.activity == AgentActivity.WalkingToMeeting)
+                    a.ReturnToDesk();
             }
-            queueManager.EnqueueAgent(agent);
-        }
-
-        // ─── Desk Reassignment ────────────────────────────────────────────────
-
-        /// <summary>
-        /// Reassigns an agent to a new desk index and sends them to it.
-        /// </summary>
-        public void ReassignDesk(AgentController agent, int newIndex)
-        {
-            if (agent == null) return;
-            if (deskTransforms == null || newIndex < 0 || newIndex >= deskTransforms.Length)
-            {
-                Debug.LogWarning($"[AgentManager] Invalid desk index {newIndex}.");
-                return;
-            }
-
-            agent.assignedDeskTransform = deskTransforms[newIndex];
-            agent.MoveToDesk();
-            Debug.Log($"[AgentManager] '{agent.Data?.agentName}' reassigned to desk {newIndex}.");
-        }
-
-        // ─── Demo / Testing ───────────────────────────────────────────────────
-
-        /// <summary>
-        /// For demo/testing: picks a random free agent and assigns a placeholder task.
-        /// </summary>
-        public void SimulateAgentWork()
-        {
-            List<AgentController> freeAgents = GetAgentsByStatus(AgentStatus.Free);
-            if (freeAgents.Count == 0)
-            {
-                Debug.Log("[AgentManager] No free agents to simulate work for.");
-                return;
-            }
-
-            AgentController chosen = freeAgents[Random.Range(0, freeAgents.Count)];
-
-            TaskData task = new TaskData
-            {
-                taskId = System.Guid.NewGuid().ToString(),
-                title = "Demo Task",
-                description = "Simulated work for demonstration purposes.",
-                type = (Random.value > 0.5f) ? TaskType.NeedsTextInput : TaskType.NeedsApproval,
-                status = TaskExecutionStatus.InProgress,
-                assignedAgentId = chosen.Data?.agentId
-            };
-
-            Debug.Log($"[AgentManager] Simulating work for '{chosen.Data?.agentName}' (type: {task.type}).");
-            chosen.AssignTask(task);
-        }
-        /// <summary>Returns the nearest desk Transform within snapRadius, or null.</summary>
-        public Transform GetNearestDesk(Vector3 position, float snapRadius)
-        {
-            Transform nearest = null;
-            float bestDist = snapRadius;
-            foreach (Transform desk in deskTransforms)
-            {
-                if (desk == null) continue;
-                float d = Vector3.Distance(position, desk.position);
-                if (d < bestDist) { bestDist = d; nearest = desk; }
-            }
-            return nearest;
-        }
-
-        // ─── Detail Panel ─────────────────────────────────────────────────────
-
-        /// <summary>
-        /// Opens the AgentDetailPanel for the given agent.
-        /// Called by GestureInteractionManager when an agent is pinched/selected.
-        /// </summary>
-        public void ShowAgentDetailPanel(AgentController agent)
-        {
-            if (agent == null) return;
-
-            if (agentDetailPanel == null)
-            {
-                Debug.LogWarning("[AgentManager] agentDetailPanel is not assigned; cannot show detail panel.");
-                return;
-            }
-
-            agentDetailPanel.ShowForAgent(agent);
+            AnyAgentChanged?.Invoke();
         }
     }
 }
-

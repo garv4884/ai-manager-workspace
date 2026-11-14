@@ -1,103 +1,49 @@
 using UnityEngine;
+using UnityEngine.XR.ARFoundation;
 
 namespace AIManagerWorkspace
 {
     /// <summary>
-    /// Toggles between Virtual Office mode (full VR studio walls & floor)
-    /// and Mixed Reality Passthrough mode (real room visible with floating desks & agents).
+    /// Switches between the virtual office and mixed reality. In MR the room shell
+    /// (walls, floor, ceiling, decor) is hidden and the camera clears to transparent so the
+    /// Quest passthrough feed shows through; the platform, desks and agents stay.
+    /// Passthrough itself comes from AR Foundation's ARCameraManager with the
+    /// Meta OpenXR "Camera (Passthrough)" feature enabled.
     /// </summary>
     public class PassthroughToggle : MonoBehaviour
     {
-        [Header("References")]
-        [SerializeField] private GameObject environmentRoot;
+        [SerializeField] private GameObject[] hideInMixedReality;
         [SerializeField] private Camera xrCamera;
 
-        [Header("State")]
-        [SerializeField] private bool isPassthroughActive = false;
+        private CameraClearFlags originalFlags;
+        private Color originalColor;
+        private ARCameraManager arCamera;
 
-        private CameraClearFlags originalClearFlags = CameraClearFlags.Skybox;
-        private Color originalBackgroundColor = Color.black;
+        public bool IsMixedReality { get; private set; }
 
         private void Start()
         {
-            if (xrCamera == null)
-                xrCamera = Camera.main;
-
+            if (xrCamera == null) xrCamera = Camera.main;
             if (xrCamera != null)
             {
-                originalClearFlags = xrCamera.clearFlags;
-                originalBackgroundColor = xrCamera.backgroundColor;
+                originalFlags = xrCamera.clearFlags;
+                originalColor = xrCamera.backgroundColor;
+                arCamera = xrCamera.GetComponent<ARCameraManager>();
+                if (arCamera != null) arCamera.enabled = false;
             }
         }
 
-        /// <summary>
-        /// Toggles between VR office and Mixed Reality Passthrough.
-        /// </summary>
-        public void ToggleMode()
+        public void Toggle() => SetMixedReality(!IsMixedReality);
+
+        public void SetMixedReality(bool on)
         {
-            SetPassthrough(!isPassthroughActive);
-        }
+            IsMixedReality = on;
+            foreach (var go in hideInMixedReality) if (go != null) go.SetActive(!on);
 
-        public void SetPassthrough(bool active)
-        {
-            isPassthroughActive = active;
-
-            if (xrCamera == null)
-                xrCamera = Camera.main;
-
-            if (xrCamera != null)
-            {
-                if (isPassthroughActive)
-                {
-                    // Clear with solid transparent black for Quest Passthrough underlay
-                    xrCamera.clearFlags = CameraClearFlags.SolidColor;
-                    xrCamera.backgroundColor = new Color(0, 0, 0, 0);
-                }
-                else
-                {
-                    xrCamera.clearFlags = originalClearFlags;
-                    xrCamera.backgroundColor = originalBackgroundColor;
-                }
-            }
-
-            // Hide/unhide room walls (keep desks, platform, and queue visible in both modes)
-            if (environmentRoot != null)
-            {
-                var wallBack = environmentRoot.transform.Find("WallBack");
-                var wallLeft = environmentRoot.transform.Find("WallLeft");
-                var wallRight = environmentRoot.transform.Find("WallRight");
-
-                if (wallBack != null) wallBack.gameObject.SetActive(!isPassthroughActive);
-                if (wallLeft != null) wallLeft.gameObject.SetActive(!isPassthroughActive);
-                if (wallRight != null) wallRight.gameObject.SetActive(!isPassthroughActive);
-            }
-
-            // Also synchronize with Meta OVRPassthroughLayer if present in scene
-            try
-            {
-                var allMBs = FindObjectsByType<MonoBehaviour>(FindObjectsInactive.Exclude);
-                foreach (var mb in allMBs)
-                {
-                    if (mb != null && mb.GetType().Name == "OVRPassthroughLayer")
-                    {
-                        var hiddenProp = mb.GetType().GetProperty("hidden");
-                        if (hiddenProp != null && hiddenProp.CanWrite)
-                        {
-                            hiddenProp.SetValue(mb, !isPassthroughActive);
-                        }
-                        else
-                        {
-                            ((Behaviour)mb).enabled = isPassthroughActive;
-                        }
-                    }
-                }
-            }
-            catch (System.Exception ex)
-            {
-                Debug.LogWarning($"[PassthroughToggle] Optional OVRPassthroughLayer sync notice: {ex.Message}");
-            }
-
-            Debug.Log($"[PassthroughToggle] Mode switched to: {(isPassthroughActive ? "Mixed Reality (Passthrough)" : "Virtual Studio")}");
+            if (xrCamera == null) return;
+            if (arCamera != null) arCamera.enabled = on;
+            xrCamera.clearFlags = on ? CameraClearFlags.SolidColor : originalFlags;
+            xrCamera.backgroundColor = on ? new Color(0f, 0f, 0f, 0f) : originalColor;
         }
     }
 }

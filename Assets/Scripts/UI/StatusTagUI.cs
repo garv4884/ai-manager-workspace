@@ -1,123 +1,74 @@
-using System.Collections;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
 
 namespace AIManagerWorkspace
 {
+    /// <summary>
+    /// Floating tag above an agent's head: name, role, a colour-coded status pill and a
+    /// detail line (progress, place in line...). It turns to face the manager and grows
+    /// with distance so it stays readable from the elevated desk.
+    /// </summary>
     public class StatusTagUI : MonoBehaviour
     {
-        [Header("UI References")]
-        [SerializeField] private Canvas canvas;
-        [SerializeField] private Image backgroundImage;
-        [SerializeField] private Image statusIndicatorDot;
-        [SerializeField] private TextMeshProUGUI agentNameText;
-        [SerializeField] private TextMeshProUGUI agentRoleText;
+        [SerializeField] private Image pill;
+        [SerializeField] private Image accentBar;
+        [SerializeField] private TextMeshProUGUI nameText;
+        [SerializeField] private TextMeshProUGUI roleText;
         [SerializeField] private TextMeshProUGUI statusText;
+        [SerializeField] private TextMeshProUGUI detailText;
+        [SerializeField] private float headClearance = 0.38f;
+        [SerializeField] private float referenceDistance = 3.0f;
+        [SerializeField] private float maxGrowth = 3.2f;
 
-        [Header("Settings")]
-        [SerializeField] private Vector3 heightOffset = new Vector3(0, 1.70f, 0);
-        [SerializeField] private float colorLerpSpeed = 5f;
-        [SerializeField] private bool billboardToCamera = true;
+        private AgentController agent;
+        private Transform cam;
+        private Vector3 baseScale;
 
-        private Transform cameraTransform;
-        private Color targetStatusColor = Color.white;
-        private Transform targetFollow;
-
-        private void Awake()
+        public void Bind(AgentController owner)
         {
-            if (canvas == null) canvas = GetComponent<Canvas>();
-            if (Camera.main != null) cameraTransform = Camera.main.transform;
-            SanitizeScales();
+            agent = owner;
+            baseScale = transform.localScale;
+            agent.Changed += _ => Refresh();
+            if (accentBar != null) accentBar.color = agent.Data.accentColor;
+            Refresh();
         }
 
-        private void Start()
+        private void Refresh()
         {
-            if (cameraTransform == null && Camera.main != null)
+            if (agent == null) return;
+            AgentData d = agent.Data;
+            if (nameText != null) nameText.text = d.agentName;
+            if (roleText != null) roleText.text = d.agentRole;
+            if (statusText != null) statusText.text = d.StatusLabel;
+            if (pill != null) pill.color = d.StatusColor;
+
+            if (detailText != null)
             {
-                cameraTransform = Camera.main.transform;
-            }
-            SanitizeScales();
-        }
-
-        private void SanitizeScales()
-        {
-            // Enforce (1, 1, 1) scale on every child element under this canvas
-            var allTransforms = GetComponentsInChildren<Transform>(true);
-            foreach (var t in allTransforms)
-            {
-                if (t != transform)
-                {
-                    t.localScale = Vector3.one;
-                }
-            }
-        }
-
-        public void Initialize(Transform agentTransform, string name, string role)
-        {
-            targetFollow = agentTransform;
-            if (agentNameText != null) agentNameText.text = name;
-            if (agentRoleText != null) agentRoleText.text = role;
-            transform.position = agentTransform.position + heightOffset;
-        }
-
-        public void UpdateStatus(AgentData data)
-        {
-            if (data == null) return;
-
-            targetStatusColor = data.GetStatusColor();
-
-            if (statusText != null)
-            {
-                statusText.text = data.GetStatusDisplayString();
-                statusText.color = targetStatusColor;
-            }
-
-            if (statusIndicatorDot != null)
-            {
-                statusIndicatorDot.color = targetStatusColor;
-            }
-
-            if (backgroundImage != null)
-            {
-                // Semi-transparent dark background tinted with status color
-                Color tintedBg = Color.Lerp(new Color(0.08f, 0.08f, 0.12f, 0.88f), targetStatusColor, 0.12f);
-                backgroundImage.color = tintedBg;
+                TaskData t = agent.CurrentTask;
+                string detail = d.ActivityLabel;
+                if (d.status == AgentStatus.Working && t != null && d.activity == AgentActivity.AtDesk)
+                    detail = $"{Mathf.RoundToInt(t.progress * 100f)}%  {t.title}";
+                detailText.text = detail;
             }
         }
 
         private void LateUpdate()
         {
-            // Position follow
-            if (targetFollow != null)
-            {
-                transform.position = targetFollow.position + heightOffset;
-            }
+            if (agent == null) return;
+            if (cam == null) { if (Camera.main == null) return; cam = Camera.main.transform; }
 
-            // Smoothly lerp indicator dot to target status color
-            if (statusIndicatorDot != null)
-            {
-                statusIndicatorDot.color = Color.Lerp(statusIndicatorDot.color, targetStatusColor, Time.deltaTime * colorLerpSpeed);
-            }
+            Transform head = agent.Avatar.Head;
+            transform.position = head.position + Vector3.up * headClearance;
 
-            // Billboard towards player camera
-            if (billboardToCamera)
-            {
-                if (cameraTransform == null && Camera.main != null)
-                {
-                    cameraTransform = Camera.main.transform;
-                }
+            Vector3 toTag = transform.position - cam.position;
+            if (toTag.sqrMagnitude > 0.0001f) transform.rotation = Quaternion.LookRotation(toTag, Vector3.up);
 
-                if (cameraTransform != null)
-                {
-                    Vector3 lookDir = transform.position - cameraTransform.position;
-                    lookDir.y = 0; // Keep vertical orientation straight
-                    if (lookDir != Vector3.zero)
-                    {
-                        transform.rotation = Quaternion.LookRotation(lookDir);
-                    }
-                }
-            }
+            float growth = Mathf.Clamp(toTag.magnitude / referenceDistance, 1f, maxGrowth);
+            if (agent.Data.NeedsManager) growth *= 1f + 0.06f * Mathf.Sin(Time.time * 6f);
+            transform.localScale = baseScale * growth;
+
+            if (agent.Data.status == AgentStatus.Working && Time.frameCount % 10 == 0) Refresh();
         }
     }
 }

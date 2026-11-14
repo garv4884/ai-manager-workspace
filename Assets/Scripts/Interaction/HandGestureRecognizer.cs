@@ -1,221 +1,161 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Events;
+using UnityEngine.InputSystem;
 using UnityEngine.XR.Hands;
 
 namespace AIManagerWorkspace
 {
     /// <summary>
-    /// Detects hand gestures via UnityEngine.XR.Hands and raises UnityEvents.
-    /// Requires XR Hands package (com.unity.xr.hands 1.7.3+).
-    /// Fallback: in Editor without a headset, use keyboard keys U/D/P/I/O to simulate gestures.
+    /// Recognises the three review gestures on either hand using XR Hands joint data.
+    /// A gesture must be held for a moment before it fires, so ordinary hand poses
+    /// (an open hand while looking around, a loose fist) do not trigger decisions.
+    ///
+    ///   Thumbs up   -> approve
+    ///   Thumbs down -> request changes
+    ///   Palm push   -> dismiss (open hand, palm facing away from you, held)
+    ///
+    /// Editor shortcuts: F1 approve, F2 changes, F3 dismiss.
     /// </summary>
     public class HandGestureRecognizer : MonoBehaviour
     {
-        // ── Inspector ─────────────────────────────────────────────────────────
-        public enum HandChoice { Right, Left }
-        [SerializeField] private float gestureCooldown = 0.8f;
-        [SerializeField] private HandChoice dominantHand = HandChoice.Right;
+        public enum Gesture { None, ThumbsUp, ThumbsDown, PalmPush }
 
-        // ── Events ────────────────────────────────────────────────────────────
-        [Header("Gesture Events")]
-        public UnityEvent OnThumbsUp    = new UnityEvent();
-        public UnityEvent OnThumbsDown  = new UnityEvent();
-        public UnityEvent OnPalmOpen    = new UnityEvent();
-        public UnityEvent<Vector3> OnPinch = new UnityEvent<Vector3>();
-        public UnityEvent OnPointGesture = new UnityEvent();
+        [SerializeField] private float thumbHoldSeconds = 0.45f;
+        [SerializeField] private float palmHoldSeconds = 0.7f;
+        [SerializeField] private float cooldownSeconds = 1.0f;
 
-        // ── Private ───────────────────────────────────────────────────────────
-        private XRHandSubsystem _handSubsystem;
-        private float _cooldownTimer;
+        public UnityEvent OnThumbsUp = new UnityEvent();
+        public UnityEvent OnThumbsDown = new UnityEvent();
+        public UnityEvent OnPalmPush = new UnityEvent();
 
-        // Thresholds (metres)
-        private const float CurlThreshold      = 0.05f;
-        private const float ExtendThreshold    = 0.08f;
-        private const float ThumbVerticalDelta = 0.06f;
-        private const float PinchDistance      = 0.025f;
+        // Tunables in metres.
+        private const float CurledMax = 0.075f;
+        private const float ExtendedMin = 0.095f;
 
-        private enum ActiveGesture { None, ThumbsUp, ThumbsDown, PalmOpen, Pinch, Point }
-        private ActiveGesture _activeGesture = ActiveGesture.None;
+        private XRHandSubsystem hands;
+        private Gesture holding = Gesture.None;
+        private float holdTime;
+        private float cooldown;
+        private bool needsRelease;
+        private Transform head;
 
-        // ── Unity Lifecycle ───────────────────────────────────────────────────
-
-        private void OnEnable()  => AcquireSubsystem();
-        private void OnDisable() => _handSubsystem = null;
-
-        private void AcquireSubsystem()
-        {
-            var list = new List<XRHandSubsystem>();
-            SubsystemManager.GetSubsystems(list);
-            _handSubsystem = list.Count > 0 ? list[0] : null;
-        }
+        /// <summary>The gesture currently being held (for UI feedback).</summary>
+        public Gesture Pending => holding;
+        /// <summary>0..1 progress towards firing <see cref="Pending"/>.</summary>
+        public float HoldProgress => holding == Gesture.None ? 0f : Mathf.Clamp01(holdTime / Required(holding));
 
         private void Update()
         {
-            // Editor keyboard simulation (U=ThumbUp, D=ThumbDown, P=PalmOpen, I=Pinch, O=Point)
-            if (Application.isEditor && Application.isPlaying)
+            if (cooldown > 0f) cooldown -= Time.deltaTime;
+
+            var kb = Keyboard.current;
+            if (kb != null && cooldown <= 0f)
             {
-                if (_cooldownTimer <= 0f)
-                {
-                    var kb = UnityEngine.InputSystem.Keyboard.current;
-                    if (kb != null)
-                    {
-                        if (kb.uKey.wasPressedThisFrame) { Fire(ActiveGesture.ThumbsUp);   OnThumbsUp?.Invoke();                _cooldownTimer = gestureCooldown; return; }
-                        if (kb.dKey.wasPressedThisFrame) { Fire(ActiveGesture.ThumbsDown); OnThumbsDown?.Invoke();              _cooldownTimer = gestureCooldown; return; }
-                        if (kb.pKey.wasPressedThisFrame) { Fire(ActiveGesture.PalmOpen);   OnPalmOpen?.Invoke();                _cooldownTimer = gestureCooldown; return; }
-                        if (kb.iKey.wasPressedThisFrame) { Fire(ActiveGesture.Pinch);      OnPinch?.Invoke(transform.position); _cooldownTimer = gestureCooldown; return; }
-                        if (kb.oKey.wasPressedThisFrame) { Fire(ActiveGesture.Point);      OnPointGesture?.Invoke();            _cooldownTimer = gestureCooldown; return; }
-                    }
-                }
+                if (kb.f1Key.wasPressedThisFrame) { Fire(Gesture.ThumbsUp); return; }
+                if (kb.f2Key.wasPressedThisFrame) { Fire(Gesture.ThumbsDown); return; }
+                if (kb.f3Key.wasPressedThisFrame) { Fire(Gesture.PalmPush); return; }
             }
 
-            // Re-acquire hand subsystem if lost
-            if (_handSubsystem == null || !_handSubsystem.running)
+            if (hands == null || !hands.running)
             {
-                AcquireSubsystem();
-                if (_handSubsystem == null) { _cooldownTimer -= Time.deltaTime; return; }
+                var list = new List<XRHandSubsystem>();
+                SubsystemManager.GetSubsystems(list);
+                hands = list.Count > 0 ? list[0] : null;
+                if (hands == null) { holding = Gesture.None; return; }
             }
+            if (head == null && Camera.main != null) head = Camera.main.transform;
 
-            if (_cooldownTimer > 0f)
-            {
-                _cooldownTimer -= Time.deltaTime;
-                return;
-            }
+            Gesture now = Gesture.None;
+            if (hands.rightHand.isTracked) now = Detect(hands.rightHand, true);
+            if (now == Gesture.None && hands.leftHand.isTracked) now = Detect(hands.leftHand, false);
 
-            XRHand hand = dominantHand == HandChoice.Right
-                ? _handSubsystem.rightHand
-                : _handSubsystem.leftHand;
+            if (now == Gesture.None) { needsRelease = false; holding = Gesture.None; holdTime = 0f; return; }
+            if (needsRelease || cooldown > 0f) return;
 
-            if (!hand.isTracked) return;
-
-            EvaluateGestures(hand);
+            if (now != holding) { holding = now; holdTime = 0f; }
+            holdTime += Time.deltaTime;
+            if (holdTime >= Required(now)) Fire(now);
         }
 
-        // ── Gesture Evaluation ────────────────────────────────────────────────
+        private float Required(Gesture g) => g == Gesture.PalmPush ? palmHoldSeconds : thumbHoldSeconds;
 
-        private void EvaluateGestures(XRHand hand)
+        private void Fire(Gesture g)
         {
-            if (!GetJointPos(hand, XRHandJointID.Wrist,          out Vector3 wrist))       return;
-            if (!GetJointPos(hand, XRHandJointID.ThumbTip,        out Vector3 thumbTip))    return;
-            if (!GetJointPos(hand, XRHandJointID.IndexTip,        out Vector3 indexTip))    return;
-            if (!GetJointPos(hand, XRHandJointID.MiddleTip,       out Vector3 middleTip))   return;
-            if (!GetJointPos(hand, XRHandJointID.RingTip,         out Vector3 ringTip))     return;
-            if (!GetJointPos(hand, XRHandJointID.LittleTip,       out Vector3 littleTip))   return;
-            if (!GetJointPos(hand, XRHandJointID.ThumbProximal,   out Vector3 thumbProx))   return;
-            if (!GetJointPos(hand, XRHandJointID.IndexProximal,   out Vector3 indexProx))   return;
-            if (!GetJointPos(hand, XRHandJointID.MiddleProximal,  out Vector3 middleProx))  return;
-            if (!GetJointPos(hand, XRHandJointID.RingProximal,    out Vector3 ringProx))    return;
-            if (!GetJointPos(hand, XRHandJointID.LittleProximal,  out Vector3 littleProx))  return;
-
-            float indexExt  = Vector3.Distance(indexTip,  indexProx);
-            float middleExt = Vector3.Distance(middleTip, middleProx);
-            float ringExt   = Vector3.Distance(ringTip,   ringProx);
-            float littleExt = Vector3.Distance(littleTip, littleProx);
-            float thumbExt  = Vector3.Distance(thumbTip,  thumbProx);
-
-            bool indexCurled  = indexExt  < CurlThreshold;
-            bool middleCurled = middleExt < CurlThreshold;
-            bool ringCurled   = ringExt   < CurlThreshold;
-            bool littleCurled = littleExt < CurlThreshold;
-            bool thumbCurled  = thumbExt  < CurlThreshold;
-
-            bool indexExtended  = indexExt  > ExtendThreshold;
-            bool middleExtended = middleExt > ExtendThreshold;
-            bool ringExtended   = ringExt   > ExtendThreshold;
-            bool littleExtended = littleExt > ExtendThreshold;
-
-            // ── Pinch (thumb-index close) ─────────────────────────────────────
-            if (Vector3.Distance(thumbTip, indexTip) < PinchDistance)
+            holding = Gesture.None;
+            holdTime = 0f;
+            cooldown = cooldownSeconds;
+            needsRelease = true;
+            switch (g)
             {
-                if (_activeGesture != ActiveGesture.Pinch)
-                {
-                    Fire(ActiveGesture.Pinch);
-                    OnPinch?.Invoke((thumbTip + indexTip) * 0.5f);
-                }
-                return;
+                case Gesture.ThumbsUp: OnThumbsUp.Invoke(); break;
+                case Gesture.ThumbsDown: OnThumbsDown.Invoke(); break;
+                case Gesture.PalmPush: OnPalmPush.Invoke(); break;
             }
-
-            // ── Thumbs Up (thumb above wrist, all other fingers curled) ───────
-            if ((thumbTip.y - wrist.y) > ThumbVerticalDelta && indexCurled && middleCurled && ringCurled && littleCurled)
-            {
-                if (_activeGesture != ActiveGesture.ThumbsUp)
-                {
-                    Fire(ActiveGesture.ThumbsUp);
-                    OnThumbsUp?.Invoke();
-                }
-                return;
-            }
-
-            // ── Thumbs Down (thumb below wrist, all other fingers curled) ─────
-            if ((wrist.y - thumbTip.y) > ThumbVerticalDelta && indexCurled && middleCurled && ringCurled && littleCurled)
-            {
-                if (_activeGesture != ActiveGesture.ThumbsDown)
-                {
-                    Fire(ActiveGesture.ThumbsDown);
-                    OnThumbsDown?.Invoke();
-                }
-                return;
-            }
-
-            // ── Point (index extended, rest curled) ───────────────────────────
-            if (indexExtended && middleCurled && ringCurled && littleCurled && thumbCurled)
-            {
-                if (_activeGesture != ActiveGesture.Point)
-                {
-                    Fire(ActiveGesture.Point);
-                    OnPointGesture?.Invoke();
-                }
-                return;
-            }
-
-            // ── Palm Open (all fingers spread) ────────────────────────────────
-            Vector3 palmCenter = (indexProx + middleProx + ringProx + littleProx) * 0.25f;
-            bool palmOpen = indexExtended && middleExtended && ringExtended && littleExtended
-                         && Vector3.Distance(thumbTip,  palmCenter) > ExtendThreshold
-                         && Vector3.Distance(indexTip,  palmCenter) > ExtendThreshold
-                         && Vector3.Distance(middleTip, palmCenter) > ExtendThreshold
-                         && Vector3.Distance(ringTip,   palmCenter) > ExtendThreshold
-                         && Vector3.Distance(littleTip, palmCenter) > ExtendThreshold;
-
-            if (palmOpen)
-            {
-                if (_activeGesture != ActiveGesture.PalmOpen)
-                {
-                    Fire(ActiveGesture.PalmOpen);
-                    OnPalmOpen?.Invoke();
-                }
-                return;
-            }
-
-            // No gesture matched — reset so gestures can re-fire next time
-            _activeGesture = ActiveGesture.None;
         }
 
-        // ── Helpers ───────────────────────────────────────────────────────────
-
-        private void Fire(ActiveGesture g)
+        private Gesture Detect(XRHand hand, bool isRight)
         {
-            _activeGesture = g;
-            _cooldownTimer = gestureCooldown;
+            if (!Pos(hand, XRHandJointID.Palm, out Vector3 palm) ||
+                !Pos(hand, XRHandJointID.Wrist, out Vector3 wrist) ||
+                !Pos(hand, XRHandJointID.ThumbTip, out Vector3 thumbTip) ||
+                !Pos(hand, XRHandJointID.ThumbProximal, out Vector3 thumbProx) ||
+                !Pos(hand, XRHandJointID.IndexTip, out Vector3 indexTip) ||
+                !Pos(hand, XRHandJointID.MiddleTip, out Vector3 middleTip) ||
+                !Pos(hand, XRHandJointID.RingTip, out Vector3 ringTip) ||
+                !Pos(hand, XRHandJointID.LittleTip, out Vector3 littleTip) ||
+                !Pos(hand, XRHandJointID.IndexProximal, out Vector3 indexProx) ||
+                !Pos(hand, XRHandJointID.LittleProximal, out Vector3 littleProx))
+                return Gesture.None;
+
+            float dIndex = Vector3.Distance(indexTip, palm);
+            float dMiddle = Vector3.Distance(middleTip, palm);
+            float dRing = Vector3.Distance(ringTip, palm);
+            float dLittle = Vector3.Distance(littleTip, palm);
+
+            bool fist = dIndex < CurledMax && dMiddle < CurledMax && dRing < CurledMax && dLittle < CurledMax;
+            if (fist && Vector3.Distance(thumbTip, palm) > CurledMax)
+            {
+                float up = (thumbTip - thumbProx).normalized.y;
+                if (up > 0.75f) return Gesture.ThumbsUp;
+                if (up < -0.75f) return Gesture.ThumbsDown;
+            }
+
+            bool open = dIndex > ExtendedMin && dMiddle > ExtendedMin && dRing > ExtendedMin && dLittle > ExtendedMin * 0.85f;
+            if (open && head != null)
+            {
+                Vector3 normal = Vector3.Cross(indexProx - wrist, littleProx - wrist).normalized;
+                if (isRight) normal = -normal;           // now points out of the palm
+                Vector3 toHand = (palm - head.position).normalized;
+                bool inFront = Vector3.Dot(toHand, head.forward) > 0.5f;
+                bool facingAway = Vector3.Dot(normal, head.forward) > 0.6f;
+                bool fingersUp = (indexTip - wrist).normalized.y > 0.3f;
+                if (inFront && facingAway && fingersUp) return Gesture.PalmPush;
+            }
+            return Gesture.None;
         }
 
-        private static bool GetJointPos(XRHand hand, XRHandJointID id, out Vector3 position)
+        private static bool Pos(XRHand hand, XRHandJointID id, out Vector3 p)
         {
-            XRHandJoint joint = hand.GetJoint(id);
-            if (joint.TryGetPose(out Pose pose))
+            if (hand.GetJoint(id).TryGetPose(out Pose pose))
             {
-                position = pose.position;
+                // Joint poses are in XR-origin space; convert to world if an origin exists.
+                p = OriginToWorld(pose.position);
                 return true;
             }
-            position = Vector3.zero;
+            p = default;
             return false;
         }
 
-        // ── Public API (manual triggers for UI buttons / testing) ─────────────
-        public void TriggerThumbsUp()   { Fire(ActiveGesture.ThumbsUp);   OnThumbsUp?.Invoke(); }
-        public void TriggerThumbsDown() { Fire(ActiveGesture.ThumbsDown); OnThumbsDown?.Invoke(); }
-        public void TriggerPalmOpen()   { Fire(ActiveGesture.PalmOpen);   OnPalmOpen?.Invoke(); }
-        public void TriggerPinch()      { Fire(ActiveGesture.Pinch);      OnPinch?.Invoke(transform.position); }
-        public void TriggerPoint()      { Fire(ActiveGesture.Point);      OnPointGesture?.Invoke(); }
+        private static Transform origin;
+        private static Vector3 OriginToWorld(Vector3 local)
+        {
+            if (origin == null)
+            {
+                var xrOrigin = FindAnyObjectByType<Unity.XR.CoreUtils.XROrigin>();
+                if (xrOrigin != null) origin = xrOrigin.CameraFloorOffsetObject != null ? xrOrigin.CameraFloorOffsetObject.transform : xrOrigin.transform;
+            }
+            return origin != null ? origin.TransformPoint(local) : local;
+        }
     }
 }

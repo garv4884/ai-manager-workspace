@@ -1,794 +1,721 @@
 using System.Collections.Generic;
+using System.Linq;
 using TMPro;
 using Unity.AI.Navigation;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.AI;
+using UnityEngine.EventSystems;
+using UnityEngine.Rendering;
+using UnityEngine.SceneManagement;
 using UnityEngine.UI;
+using static AIManagerWorkspace.BuilderKit;
 
 namespace AIManagerWorkspace
 {
     /// <summary>
-    /// Automated builder for the AI Manager Workspace VR scene.
-    /// Builds environment, manager podium, desks, queue, UI panels, NavMesh, and wires all managers.
-    /// Menu: Tools > AI Manager > Build Main Scene
+    /// Builds the whole AI Manager Workspace scene from code.
+    ///
+    /// Layout (metres, +Z is "in front of the manager"):
+    ///   - Manager platform: round, 1.45 m high, centred at the origin, stairs at the back.
+    ///   - Review desk on the platform's front edge; lift just beyond it at z = 2.95.
+    ///   - Queue lane from z = 4.2 outward along +Z.
+    ///   - Workstations around the platform (layout templates are relative to the origin).
+    ///   - Room 24 x 23.5 m: daylight windows (west), oak slat wall (east), team board (north),
+    ///     glass discussion room (south-east corner), lounge (south-west corner).
     /// </summary>
     public static class SceneBuilder
     {
+        private const string ScenePath = "Assets/Scenes/AIManagerWorkspace.unity";
+        private const float PlatformHeight = 1.45f;
+        private const float PlatformRadius = 2.3f;
+        private const float DeskTopY = PlatformHeight + 0.85f;
+        private static readonly Vector3 LiftCenter = new Vector3(0f, 0f, 2.95f);
+        private static readonly Vector3 QueueStart = new Vector3(0f, 0f, 4.2f);
+        private static readonly Vector3 ManagerStand = new Vector3(0f, PlatformHeight, 0.5f);
+        private const int WorkstationCount = 6;
+
         [MenuItem("Tools/AI Manager/Build Main Scene")]
         public static void BuildMainScene()
         {
-            Debug.Log("[SceneBuilder] Starting complete AI Manager Workspace scene build...");
+            SetNavAgentRadius(0.28f);
+            AgentPrefabSetup.CreateAgentPrefab();
+            var agentPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(AgentPrefabSetup.PrefabPath);
 
-            // ── 0. Create clean new empty scene ────────────────────────────────
-            var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
-            // ── 1. Ensure Agent Prefab exists ──────────────────────────────────
-            var agentPrefab = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Prefabs/AgentNPC.prefab");
-            if (agentPrefab == null)
+            var shell = new GameObject("Shell").transform;               // hidden in mixed reality
+            var decor = new GameObject("Decor").transform;               // hidden in mixed reality
+            var platform = new GameObject("ManagerPlatform").transform;
+            var desksRoot = new GameObject("Workstations").transform;
+            var systems = new GameObject("Systems").transform;
+
+            BuildRoom(shell);
+            BuildDecor(decor);
+            var meetingWalls = new GameObject("MeetingRoomWalls").transform;
+            var meeting = BuildMeetingRoom(meetingWalls);
+            var lift = BuildLift();
+            var queueStart = BuildQueueLane();
+            var deskParts = BuildPlatform(platform);
+            var workstations = BuildWorkstations(desksRoot);
+            BuildLighting();
+
+            MarkStatic(shell.gameObject);
+            MarkStatic(decor.gameObject);
+            MarkStatic(platform.gameObject);
+            MarkStatic(meetingWalls.gameObject);
+
+            // NavMesh: bake walkable floor; desks are excluded and carve at runtime instead.
+            var nav = new GameObject("NavMesh").AddComponent<NavMeshSurface>();
+            nav.transform.SetParent(systems);
+            nav.collectObjects = CollectObjects.All;
+            nav.useGeometry = NavMeshCollectGeometry.PhysicsColliders;
+            nav.BuildNavMesh();
+
+            // ── XR rig ──────────────────────────────────────────────────────
+            var rigPrefab = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/VRTemplateAssets/Prefabs/Setup/Complete XR Origin Set Up Hands Variant.prefab");
+            var rig = (GameObject)PrefabUtility.InstantiatePrefab(rigPrefab);
+            rig.name = "XR Origin (Manager)";
+            rig.transform.SetPositionAndRotation(ManagerStand, Quaternion.identity);
+            Camera xrCam = rig.GetComponentInChildren<Camera>(true);
+            if (Object.FindAnyObjectByType<EventSystem>() == null)
             {
-                Debug.Log("[SceneBuilder] Creating AgentNPC prefab first...");
-                AgentPrefabSetup.CreateAgentPrefab();
-                agentPrefab = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Prefabs/AgentNPC.prefab");
+                var es = new GameObject("EventSystem", typeof(EventSystem), typeof(UnityEngine.XR.Interaction.Toolkit.UI.XRUIInputModule));
+                es.transform.SetParent(systems);
             }
 
-            // ── 2. Room Environment ───────────────────────────────────────────
-            var envRoot = new GameObject("Environment");
-
-            // Main Floor (ground for agents to walk on)
-            var floor = CreatePrimitive(PrimitiveType.Cube, "Floor",
-                new Vector3(0, -0.05f, 6f), new Vector3(26f, 0.1f, 24f));
-            floor.transform.SetParent(envRoot.transform);
-            SetURPMaterial(floor, new Color(0.12f, 0.14f, 0.18f)); // Dark sleek slate
-            floor.AddComponent<UnityEngine.XR.Interaction.Toolkit.Locomotion.Teleportation.TeleportationArea>();
-
-            // Boundary Walls (aesthetic office studio)
-            var wallBack = CreateWall("WallBack", new Vector3(0, 2.5f, 18f), new Vector3(26f, 5f, 0.3f), new Color(0.08f, 0.09f, 0.12f));
-            wallBack.transform.SetParent(envRoot.transform);
-
-            var wallLeft = CreateWall("WallLeft", new Vector3(-13f, 2.5f, 6f), new Vector3(0.3f, 5f, 24f), new Color(0.09f, 0.10f, 0.13f));
-            wallLeft.transform.SetParent(envRoot.transform);
-
-            var wallRight = CreateWall("WallRight", new Vector3(13f, 2.5f, 6f), new Vector3(0.3f, 5f, 24f), new Color(0.09f, 0.10f, 0.13f));
-            wallRight.transform.SetParent(envRoot.transform);
-
-            // ── 3. Manager Platform (Elevated Executive Podium) ────────────────
-            var platformRoot = new GameObject("ManagerPlatform");
-            platformRoot.transform.position = new Vector3(0, 0, -2f);
-
-            // Podium floor (elevated 0.40m)
-            var podium = CreatePrimitive(PrimitiveType.Cube, "PodiumFloor",
-                new Vector3(0, 0.20f, -1.8f), new Vector3(4.5f, 0.40f, 3.0f));
-            podium.transform.SetParent(platformRoot.transform);
-            SetURPMaterial(podium, new Color(0.06f, 0.07f, 0.10f));
-            podium.AddComponent<UnityEngine.XR.Interaction.Toolkit.Locomotion.Teleportation.TeleportationArea>();
-
-            // Steps leading up to podium
-            var step1 = CreatePrimitive(PrimitiveType.Cube, "Step1",
-                new Vector3(0, 0.10f, -0.20f), new Vector3(3.2f, 0.20f, 0.25f));
-            step1.transform.SetParent(platformRoot.transform);
-            SetURPMaterial(step1, new Color(0.1f, 0.11f, 0.15f));
-
-            var step2 = CreatePrimitive(PrimitiveType.Cube, "Step2",
-                new Vector3(0, 0.20f, -0.38f), new Vector3(3.0f, 0.20f, 0.20f));
-            step2.transform.SetParent(platformRoot.transform);
-            SetURPMaterial(step2, new Color(0.1f, 0.11f, 0.15f));
-
-            // Executive Manager Desk (desk surface at y = 0.40 + 0.74 = 1.14m)
-            var managerDesk = CreatePrimitive(PrimitiveType.Cube, "ManagerDesk",
-                new Vector3(0, 1.115f, -1.15f), new Vector3(2.2f, 0.05f, 0.85f));
-            managerDesk.transform.SetParent(platformRoot.transform);
-            SetURPMaterial(managerDesk, new Color(0.18f, 0.14f, 0.10f)); // Rich dark walnut wood
-
-            // Desk front modesty panel
-            var modestyPanel = CreatePrimitive(PrimitiveType.Cube, "DeskFrontPanel",
-                new Vector3(0, 0.76f, -0.73f), new Vector3(2.0f, 0.65f, 0.03f));
-            modestyPanel.transform.SetParent(managerDesk.transform);
-            SetURPMaterial(modestyPanel, new Color(0.08f, 0.09f, 0.12f));
-
-            // ── 4. XR Origin Setup ─────────────────────────────────────────────
-            GameObject xrOrigin = GameObject.Find("XR Origin (XR Rig)") ?? GameObject.Find("XR Origin");
-            if (xrOrigin == null)
-            {
-                var originPrefab = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/VRTemplateAssets/Prefabs/Setup/Complete XR Origin Set Up Hands Variant.prefab")
-                                ?? AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Samples/XR Interaction Toolkit/3.4.1/Hands Interaction Demo/Prefabs/XR Origin (XR Rig) - Hands Interaction Demo.prefab")
-                                ?? AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Samples/XR Interaction Toolkit/3.4.1/Starter Assets/Prefabs/XR Origin (XR Rig).prefab");
-
-                if (originPrefab != null)
-                {
-                    xrOrigin = (GameObject)PrefabUtility.InstantiatePrefab(originPrefab);
-                    xrOrigin.name = "XR Origin";
-                    Debug.Log($"[SceneBuilder] Instantiated XR Origin from {AssetDatabase.GetAssetPath(originPrefab)}");
-                }
-                else
-                {
-                    Debug.LogWarning("[SceneBuilder] XR Origin prefab not found in project. Creating fallback Camera Rig.");
-                    xrOrigin = new GameObject("XR Origin");
-                    var cameraOffset = new GameObject("Camera Offset");
-                    cameraOffset.transform.SetParent(xrOrigin.transform);
-                    var mainCam = new GameObject("Main Camera");
-                    mainCam.transform.SetParent(cameraOffset.transform);
-                    mainCam.tag = "MainCamera";
-                    var cam = mainCam.AddComponent<Camera>();
-                    cam.nearClipPlane = 0.05f;
-                    mainCam.AddComponent<AudioListener>();
-                }
-            }
-
-            if (xrOrigin != null)
-            {
-                // Position XR Origin directly on the manager podium overlooking the workspace
-                xrOrigin.transform.position = new Vector3(0, 0.40f, -1.75f);
-                xrOrigin.transform.rotation = Quaternion.identity;
-            }
-
-            // ── 5. Queue Zone & Markers ────────────────────────────────────────
-            var queueRoot = new GameObject("QueueZone");
-            queueRoot.transform.position = Vector3.zero;
-
-            Vector3[] queuePositions = {
-                new Vector3(0, 0, 1.6f),
-                new Vector3(0, 0, 2.8f),
-                new Vector3(0, 0, 4.0f),
-                new Vector3(0, 0, 5.2f)
-            };
-
-            Transform[] queueSlotTransforms = new Transform[queuePositions.Length];
-            for (int i = 0; i < queuePositions.Length; i++)
-            {
-                var slot = new GameObject($"QueueSlot_{i + 1}");
-                slot.transform.position = queuePositions[i];
-                slot.transform.SetParent(queueRoot.transform);
-                queueSlotTransforms[i] = slot.transform;
-
-                // Visual ground marker cylinder
-                var marker = CreatePrimitive(PrimitiveType.Cylinder, $"SlotMarker_{i + 1}",
-                    queuePositions[i] + Vector3.up * 0.015f, new Vector3(0.5f, 0.02f, 0.5f));
-                marker.transform.SetParent(slot.transform);
-                SetURPMaterialEmissive(marker, new Color(1.0f, 0.75f, 0.1f), 1.2f); // Amber glow ring
-            }
-
-            // Manager Presentation Point (directly in front of manager desk on the floor)
-            var presentSlot = new GameObject("PresentingPosition");
-            presentSlot.transform.position = new Vector3(0, 0f, 0.35f);
-            presentSlot.transform.SetParent(queueRoot.transform);
-
-            var presentMarker = CreatePrimitive(PrimitiveType.Cylinder, "PresentMarker",
-                new Vector3(0, 0.015f, 0.35f), new Vector3(0.6f, 0.02f, 0.6f));
-            presentMarker.transform.SetParent(presentSlot.transform);
-            SetURPMaterialEmissive(presentMarker, new Color(0.1f, 0.95f, 0.65f), 1.8f); // Emerald/Cyan glow
-
-            // ── 6. 6 Agent Workstations (Desks) ────────────────────────────────
-            var desksRoot = new GameObject("AgentDesks");
-            desksRoot.transform.position = Vector3.zero;
-
-            Vector3[] deskPositions = {
-                new Vector3(-3.8f, 0, 5.0f),
-                new Vector3( 3.8f, 0, 5.0f),
-                new Vector3(-3.8f, 0, 8.0f),
-                new Vector3( 3.8f, 0, 8.0f),
-                new Vector3(-3.8f, 0, 11.0f),
-                new Vector3( 3.8f, 0, 11.0f)
-            };
-
-            Transform[] deskTransforms = new Transform[6];
-            for (int i = 0; i < 6; i++)
-            {
-                var deskGO = new GameObject($"AgentDesk_{i + 1}");
-                deskGO.transform.position = deskPositions[i];
-                deskGO.transform.rotation = Quaternion.Euler(0, 180, 0); // Facing towards manager platform
-                deskGO.transform.SetParent(desksRoot.transform);
-                deskTransforms[i] = deskGO.transform;
-
-                // Desk Surface (Standard 0.74m desk height)
-                var surface = CreatePrimitive(PrimitiveType.Cube, "DeskSurface",
-                    deskPositions[i] + new Vector3(0, 0.715f, 0), new Vector3(1.4f, 0.05f, 0.8f));
-                surface.transform.SetParent(deskGO.transform);
-                SetURPMaterial(surface, new Color(0.22f, 0.24f, 0.28f));
-
-                // 4 Desk Legs (height 0.70m)
-                float[] legX = { -0.62f, 0.62f };
-                float[] legZ = { -0.32f, 0.32f };
-                for (int lx = 0; lx < 2; lx++)
-                {
-                    for (int lz = 0; lz < 2; lz++)
-                    {
-                        var leg = CreatePrimitive(PrimitiveType.Cube, $"Leg_{lx}_{lz}",
-                            deskPositions[i] + new Vector3(legX[lx], 0.35f, legZ[lz]), new Vector3(0.05f, 0.70f, 0.05f));
-                        leg.transform.SetParent(deskGO.transform);
-                        SetURPMaterial(leg, new Color(0.12f, 0.12f, 0.14f));
-                    }
-                }
-
-                // Dual Monitors (elevated to eye level at desk)
-                var monitorL = CreatePrimitive(PrimitiveType.Cube, "MonitorLeft",
-                    deskPositions[i] + new Vector3(-0.32f, 1.05f, -0.28f), new Vector3(0.55f, 0.35f, 0.03f));
-                monitorL.transform.localRotation = Quaternion.Euler(0, 12f, 0);
-                monitorL.transform.SetParent(deskGO.transform);
-                SetURPMaterialEmissive(monitorL, new Color(0.1f, 0.45f, 0.95f), 1.5f); // Code editor blue glow
-
-                var monitorR = CreatePrimitive(PrimitiveType.Cube, "MonitorRight",
-                    deskPositions[i] + new Vector3(0.32f, 1.05f, -0.28f), new Vector3(0.55f, 0.35f, 0.03f));
-                monitorR.transform.localRotation = Quaternion.Euler(0, -12f, 0);
-                monitorR.transform.SetParent(deskGO.transform);
-                SetURPMaterialEmissive(monitorR, new Color(0.1f, 0.8f, 0.5f), 1.5f); // Terminal green glow
-
-                // Ergonomic Chair (Standard chair seat height 0.44m)
-                var chairSeat = CreatePrimitive(PrimitiveType.Cube, "ChairSeat",
-                    deskPositions[i] + new Vector3(0, 0.44f, 0.55f), new Vector3(0.48f, 0.06f, 0.48f));
-                chairSeat.transform.SetParent(deskGO.transform);
-                SetURPMaterial(chairSeat, new Color(0.15f, 0.16f, 0.20f));
-
-                var chairBack = CreatePrimitive(PrimitiveType.Cube, "ChairBack",
-                    deskPositions[i] + new Vector3(0, 0.78f, 0.76f), new Vector3(0.45f, 0.60f, 0.05f));
-                chairBack.transform.SetParent(deskGO.transform);
-                SetURPMaterial(chairBack, new Color(0.15f, 0.16f, 0.20f));
-            }
-
-            // ── 7. Studio & Ambient Lighting ──────────────────────────────────
-            var lightsRoot = new GameObject("Lighting");
-            lightsRoot.transform.SetParent(envRoot.transform);
-
-            // Ceiling ambient soft wash
-            CreatePointLight("OfficeCeilingLight1", new Vector3(-5f, 4.0f, 6f), new Color(0.85f, 0.90f, 1.0f), 3.5f, 16f, lightsRoot.transform);
-            CreatePointLight("OfficeCeilingLight2", new Vector3(5f, 4.0f, 6f), new Color(0.85f, 0.90f, 1.0f), 3.5f, 16f, lightsRoot.transform);
-            CreatePointLight("OfficeCeilingLight3", new Vector3(0, 4.0f, 11f), new Color(0.85f, 0.90f, 1.0f), 3.5f, 16f, lightsRoot.transform);
-
-            // Manager executive spotlight
-            CreatePointLight("ManagerSpotlight", new Vector3(0, 2.8f, -1.4f), new Color(1.0f, 0.95f, 0.88f), 2.8f, 8f, lightsRoot.transform);
-
-            // ── 8. NavMesh Baking ──────────────────────────────────────────────
-            var navSurface = floor.AddComponent<NavMeshSurface>();
-            navSurface.collectObjects = CollectObjects.All;
-            navSurface.layerMask = LayerMask.GetMask("Default");
-            navSurface.BuildNavMesh();
-            Debug.Log("[SceneBuilder] NavMesh successfully baked on office floor.");
-
-            // ── 9. World-Space Manager UI Dashboards ──────────────────────────
-            var uiRoot = new GameObject("ManagerUIDashboards");
-            uiRoot.transform.position = Vector3.zero;
-
-            // 9A. Layout Selector UI (Floating on Left of Manager Desk)
-            var layoutUIGO = CreateLayoutSelectorPanel(uiRoot.transform);
-
-            // 9B. Agent Detail Inspector UI (Floating on Right of Manager Desk)
-            var agentDetailUIGO = CreateAgentDetailPanel(uiRoot.transform);
-            var agentDetailPanel = agentDetailUIGO.GetComponent<AgentDetailPanel>();
-
-            // 9C. Virtual Keyboard UI (Center world space for text input)
-            var keyboardGO = CreateVirtualKeyboard(uiRoot.transform);
-            var keyboardManager = keyboardGO.GetComponent<VirtualKeyboardManager>();
-
-            // 9D. XR Event System (enables Hand Rays, Pokes, and Controllers to interact with UI)
-            var esGO = new GameObject("EventSystem");
-            esGO.AddComponent<UnityEngine.EventSystems.EventSystem>();
-            esGO.AddComponent<UnityEngine.XR.Interaction.Toolkit.UI.XRUIInputModule>();
-
-            // ── 10. Core Systems Setup & Wiring ────────────────────────────────
+            // ── Systems ─────────────────────────────────────────────────────
             var gmGO = new GameObject("GameManager");
-            var gameManager = gmGO.AddComponent<GameManager>();
-
-            // PassthroughToggle (MR / VR switcher)
+            gmGO.transform.SetParent(systems);
+            var gm = gmGO.AddComponent<GameManager>();
+            var ai = gmGO.AddComponent<AIServiceManager>();
+            var dispatcher = gmGO.AddComponent<TaskDispatcher>();
+            var agents = gmGO.AddComponent<AgentManager>();
+            var queue = gmGO.AddComponent<QueueManager>();
+            var layout = gmGO.AddComponent<WorkspaceLayoutManager>();
             var passthrough = gmGO.AddComponent<PassthroughToggle>();
-            var ptSO = new SerializedObject(passthrough);
-            ptSO.FindProperty("environmentRoot").objectReferenceValue = envRoot;
-            if (xrOrigin != null)
-            {
-                var cam = xrOrigin.GetComponentInChildren<Camera>();
-                if (cam != null) ptSO.FindProperty("xrCamera").objectReferenceValue = cam;
-            }
-            ptSO.ApplyModifiedProperties();
+            var recognizer = gmGO.AddComponent<HandGestureRecognizer>();
+            var gestures = gmGO.AddComponent<GestureInteractionManager>();
 
-            // QueueManager
-            var queueGO = new GameObject("QueueManager");
-            queueGO.transform.SetParent(gmGO.transform);
-            var queueManager = queueGO.AddComponent<QueueManager>();
-            var queueSO = new SerializedObject(queueManager);
-            var queueSlotsProp = queueSO.FindProperty("queueSlotTransforms");
-            queueSlotsProp.arraySize = queueSlotTransforms.Length;
-            for (int s = 0; s < queueSlotTransforms.Length; s++)
-                queueSlotsProp.GetArrayElementAtIndex(s).objectReferenceValue = queueSlotTransforms[s];
-            queueSO.FindProperty("presentingTransform").objectReferenceValue = presentSlot.transform;
-            queueSO.ApplyModifiedProperties();
+            var reviewDesk = deskParts.desk;
+            var keyboard = BuildKeyboard(platform, reviewDesk);
+            var console = BuildConsole(platform, recognizer);
+            BuildLayoutPanel(platform, passthrough);
+            BuildDetailPanel(platform);
+            BuildTeamBoard(shell.parent);
 
-            // AgentManager
-            var agentMgrGO = new GameObject("AgentManager");
-            agentMgrGO.transform.SetParent(gmGO.transform);
-            var agentManager = agentMgrGO.AddComponent<AgentManager>();
-            var agentSO = new SerializedObject(agentManager);
-            if (agentPrefab != null)
-                agentSO.FindProperty("agentPrefab").objectReferenceValue = agentPrefab;
-            var deskArrProp = agentSO.FindProperty("deskTransforms");
-            deskArrProp.arraySize = deskTransforms.Length;
-            for (int d = 0; d < deskTransforms.Length; d++)
-                deskArrProp.GetArrayElementAtIndex(d).objectReferenceValue = deskTransforms[d];
-            agentSO.FindProperty("managerPresentPoint").objectReferenceValue = presentSlot.transform;
-            agentSO.FindProperty("queueManager").objectReferenceValue = queueManager;
-            agentSO.FindProperty("agentDetailPanel").objectReferenceValue = agentDetailPanel;
-            agentSO.ApplyModifiedProperties();
+            Wire(gm, "agentManager", agents);
+            Wire(gm, "queueManager", queue);
+            Wire(gm, "aiService", ai);
+            Wire(gm, "dispatcher", dispatcher);
+            Wire(gm, "layoutManager", layout);
+            Wire(gm, "keyboard", keyboard);
 
-            // WorkspaceLayoutManager
-            var layoutMgrGO = new GameObject("WorkspaceLayoutManager");
-            layoutMgrGO.transform.SetParent(gmGO.transform);
-            var layoutManager = layoutMgrGO.AddComponent<WorkspaceLayoutManager>();
-            var layoutSO = new SerializedObject(layoutManager);
-            var layoutDeskArr = layoutSO.FindProperty("deskTransforms");
-            layoutDeskArr.arraySize = deskTransforms.Length;
-            for (int ld = 0; ld < deskTransforms.Length; ld++)
-                layoutDeskArr.GetArrayElementAtIndex(ld).objectReferenceValue = deskTransforms[ld];
-            layoutSO.FindProperty("managerPlatformTransform").objectReferenceValue = platformRoot.transform;
-            layoutSO.FindProperty("agentManager").objectReferenceValue = agentManager;
-            layoutSO.FindProperty("navMeshSurface").objectReferenceValue = navSurface;
-            layoutSO.ApplyModifiedProperties();
+            Wire(agents, "agentPrefab", agentPrefab);
+            WireArray(agents, "workstations", workstations.Cast<Object>().ToArray());
+            Wire(agents, "meetingRoom", meeting);
 
-            // Wire LayoutSelectorUI to WorkspaceLayoutManager
-            var layoutSelectorUI = layoutUIGO.GetComponent<LayoutSelectorUI>();
-            var layoutSelectorSO = new SerializedObject(layoutSelectorUI);
-            layoutSelectorSO.FindProperty("layoutManager").objectReferenceValue = layoutManager;
-            layoutSelectorSO.ApplyModifiedProperties();
+            Wire(queue, "queueStart", queueStart);
+            Wire(queue, "lift", lift);
+            Wire(queue, "reviewDesk", reviewDesk);
 
-            // AIServiceManager
-            var aiServiceGO = new GameObject("AIServiceManager");
-            aiServiceGO.transform.SetParent(gmGO.transform);
-            var aiService = aiServiceGO.AddComponent<AIServiceManager>();
+            Wire(layout, "agentManager", agents);
+            Wire(layout, "center", platform);
 
-            // AITaskGenerator
-            var aiTaskGO = new GameObject("AITaskGenerator");
-            aiTaskGO.transform.SetParent(gmGO.transform);
-            var aiTaskGen = aiTaskGO.AddComponent<AITaskGenerator>();
-            var aiTaskSO = new SerializedObject(aiTaskGen);
-            aiTaskSO.FindProperty("aiService").objectReferenceValue = aiService;
-            aiTaskSO.FindProperty("agentManager").objectReferenceValue = agentManager;
-            aiTaskSO.ApplyModifiedProperties();
+            WireArray(passthrough, "hideInMixedReality", new Object[] { shell.gameObject, decor.gameObject, meetingWalls.gameObject });
+            Wire(passthrough, "xrCamera", xrCam);
+            Wire(gestures, "recognizer", recognizer);
 
-            // HandGestureRecognizer & GestureInteractionManager
-            var gestureGO = new GameObject("GestureInteractionManager");
-            gestureGO.transform.SetParent(gmGO.transform);
-            var recognizer = gestureGO.AddComponent<HandGestureRecognizer>();
-            var gestureMgr = gestureGO.AddComponent<GestureInteractionManager>();
-            var gestureSO = new SerializedObject(gestureMgr);
-            gestureSO.FindProperty("gestureRecognizer").objectReferenceValue = recognizer;
-            gestureSO.FindProperty("queueManager").objectReferenceValue = queueManager;
-            gestureSO.FindProperty("agentManager").objectReferenceValue = agentManager;
-            gestureSO.FindProperty("agentDetailPanel").objectReferenceValue = agentDetailPanel;
-            gestureSO.ApplyModifiedProperties();
-
-            // ── 11. Save Scene and Register in Build Settings ─────────────────
-            const string scenesDir = "Assets/Scenes";
-            if (!AssetDatabase.IsValidFolder(scenesDir))
-                AssetDatabase.CreateFolder("Assets", "Scenes");
-
-            string scenePath = $"{scenesDir}/AIManagerWorkspace.unity";
-            EditorSceneManager.SaveScene(EditorSceneManager.GetActiveScene(), scenePath);
-
-            var currentScenes = new List<EditorBuildSettingsScene>(EditorBuildSettings.scenes);
-            currentScenes.RemoveAll(s => s.path == scenePath);
-            currentScenes.Insert(0, new EditorBuildSettingsScene(scenePath, true));
-            EditorBuildSettings.scenes = currentScenes.ToArray();
-
+            // ── Save ────────────────────────────────────────────────────────
+            if (!AssetDatabase.IsValidFolder("Assets/Scenes")) AssetDatabase.CreateFolder("Assets", "Scenes");
+            EditorSceneManager.SaveScene(SceneManager.GetActiveScene(), ScenePath);
+            var scenes = new List<EditorBuildSettingsScene>(EditorBuildSettings.scenes);
+            scenes.RemoveAll(s => s.path == ScenePath);
+            scenes.Insert(0, new EditorBuildSettingsScene(ScenePath, true));
+            EditorBuildSettings.scenes = scenes.ToArray();
             AssetDatabase.SaveAssets();
-            AssetDatabase.Refresh();
-
-            Debug.Log($"[SceneBuilder] ✅ COMPLETE: AI Manager Workspace scene built, fully wired, saved to {scenePath}, and set at Build Settings index 0!");
+            Debug.Log("[SceneBuilder] AI Manager Workspace scene built and saved.");
         }
 
-        // ── Helper: Layout Selector UI Panel ──────────────────────────────────
-        private static GameObject CreateLayoutSelectorPanel(Transform parent)
+        // ══ Room shell ═══════════════════════════════════════════════════════
+
+        private static void BuildRoom(Transform shell)
         {
-            var panelGO = new GameObject("LayoutSelectorPanel");
-            panelGO.transform.SetParent(parent);
-            // Angled on the left of manager's desk (ergonomic compact console)
-            panelGO.transform.position = new Vector3(-0.75f, 1.30f, -0.92f);
-            panelGO.transform.rotation = Quaternion.Euler(12f, 22f, 0);
+            Material floor = Mat("Env_Floor", Palette.Floor, 0.35f);
+            Material wall = Mat("Env_Wall", Palette.Wall, 0.1f);
+            Material ceiling = Mat("Env_Ceiling", Palette.Ceiling, 0.05f);
+            Material oak = Mat("Env_Oak", Palette.Oak, 0.35f);
+            Material charcoal = Mat("Env_Charcoal", Palette.Charcoal, 0.3f);
+            Material daylight = Emissive("Env_Daylight", Palette.Daylight, 1.35f);
+            Material panelLight = Emissive("Env_CeilingPanel", new Color(1f, 0.97f, 0.92f), 1.6f);
+            Material rug = Mat("Env_Rug", Palette.RugTeal, 0.05f);
+            Material rugSoft = Mat("Env_RugSoft", Palette.RugSoft, 0.05f);
 
-            var canvas = panelGO.AddComponent<Canvas>();
-            canvas.renderMode = RenderMode.WorldSpace;
-            panelGO.AddComponent<CanvasScaler>();
-            panelGO.AddComponent<GraphicRaycaster>();
-            panelGO.AddComponent<UnityEngine.XR.Interaction.Toolkit.UI.TrackedDeviceGraphicRaycaster>();
-            var group = panelGO.AddComponent<CanvasGroup>();
+            var floorGO = Box("Floor", shell, new Vector3(0f, -0.05f, 2.75f), new Vector3(24.4f, 0.1f, 23.9f), floor);
+            floorGO.AddComponent<UnityEngine.XR.Interaction.Toolkit.Locomotion.Teleportation.TeleportationArea>();
+            Box("WorkRug", shell, new Vector3(0f, 0.006f, 7.6f), new Vector3(18f, 0.012f, 9f), rug, false);
+            Cyl("PlatformRug", shell, new Vector3(0f, 0.011f, 0f), 7.6f, 0.022f, rugSoft, false);
 
-            var rt = panelGO.GetComponent<RectTransform>();
-            rt.sizeDelta = new Vector2(320, 320);
-            rt.localScale = Vector3.one * 0.00085f;
+            var walls = Empty("Walls", shell, Vector3.zero).transform;
+            Box("WallNorth", walls, new Vector3(0f, 2.8f, 14.6f), new Vector3(24.4f, 5.6f, 0.2f), wall);
+            Box("WallSouth", walls, new Vector3(0f, 2.8f, -9.1f), new Vector3(24.4f, 5.6f, 0.2f), wall);
+            Box("WallWest", walls, new Vector3(-12.1f, 2.8f, 2.75f), new Vector3(0.2f, 5.6f, 23.9f), wall);
+            Box("WallEast", walls, new Vector3(12.1f, 2.8f, 2.75f), new Vector3(0.2f, 5.6f, 23.9f), wall);
+            Box("Ceiling", shell, new Vector3(0f, 5.7f, 2.75f), new Vector3(24.4f, 0.2f, 24.2f), ceiling, false);
+            Box("SkirtingNorth", walls, new Vector3(0f, 0.06f, 14.48f), new Vector3(24f, 0.12f, 0.04f), oak, false);
+            Box("SkirtingSouth", walls, new Vector3(0f, 0.06f, -8.98f), new Vector3(24f, 0.12f, 0.04f), oak, false);
+            Box("SkirtingEast", walls, new Vector3(11.98f, 0.06f, 2.75f), new Vector3(0.04f, 0.12f, 23.4f), oak, false);
 
-            // Background
-            var bgGO = new GameObject("Background");
-            bgGO.transform.SetParent(panelGO.transform);
-            var bgImg = bgGO.AddComponent<Image>();
-            bgImg.color = new Color(0.08f, 0.10f, 0.15f, 0.95f);
-            var bgRect = bgGO.GetComponent<RectTransform>();
-            bgRect.anchorMin = Vector2.zero;
-            bgRect.anchorMax = Vector2.one;
-            bgRect.offsetMin = Vector2.zero;
-            bgRect.offsetMax = Vector2.zero;
-
-            // Title
-            var titleGO = new GameObject("Title");
-            titleGO.transform.SetParent(panelGO.transform);
-            var titleTmp = titleGO.AddComponent<TextMeshProUGUI>();
-            titleTmp.text = "WORKSPACE LAYOUTS";
-            titleTmp.fontSize = 20;
-            titleTmp.fontStyle = FontStyles.Bold;
-            titleTmp.alignment = TextAlignmentOptions.Center;
-            titleTmp.color = new Color(0.9f, 0.95f, 1.0f);
-            var titleRect = titleGO.GetComponent<RectTransform>();
-            titleRect.anchorMin = new Vector2(0, 0.88f);
-            titleRect.anchorMax = Vector2.one;
-            titleRect.offsetMin = Vector2.zero;
-            titleRect.offsetMax = Vector2.zero;
-
-            // Current Layout Label
-            var curGO = new GameObject("CurrentLayoutLabel");
-            curGO.transform.SetParent(panelGO.transform);
-            var curTmp = curGO.AddComponent<TextMeshProUGUI>();
-            curTmp.text = "Current: Grid";
-            curTmp.fontSize = 15;
-            curTmp.alignment = TextAlignmentOptions.Center;
-            curTmp.color = new Color(0.3f, 0.85f, 0.5f);
-            var curRect = curGO.GetComponent<RectTransform>();
-            curRect.anchorMin = new Vector2(0, 0.77f);
-            curRect.anchorMax = new Vector2(1, 0.88f);
-            curRect.offsetMin = Vector2.zero;
-            curRect.offsetMax = Vector2.zero;
-
-            // 6 Layout Buttons in 2 columns x 3 rows
-            string[] names = { "Grid", "Circle", "U-Shape", "Hub & Spoke", "Coworking", "War Room" };
-            Button[] buttons = new Button[6];
-
-            for (int b = 0; b < 6; b++)
+            // West wall: tall daylight windows with mullions and an oak sill.
+            var windows = Empty("Windows", shell, Vector3.zero).transform;
+            for (int i = 0; i < 6; i++)
             {
-                int col = b % 2;
-                int row = b / 2;
+                float z = -6.2f + i * 3.4f;
+                Box($"Pane_{i}", windows, new Vector3(-11.98f, 2.95f, z), new Vector3(0.03f, 3.6f, 3.3f), daylight, false);
+                Box($"Mullion_{i}", windows, new Vector3(-11.95f, 2.95f, z + 1.7f), new Vector3(0.08f, 3.7f, 0.12f), charcoal, false);
+                Box($"Transom_{i}", windows, new Vector3(-11.95f, 3.7f, z), new Vector3(0.06f, 0.05f, 3.3f), charcoal, false);
+            }
+            Box("Mullion_Start", windows, new Vector3(-11.95f, 2.95f, -7.9f), new Vector3(0.08f, 3.7f, 0.12f), charcoal, false);
+            Box("Sill", windows, new Vector3(-11.86f, 1.12f, 2.3f), new Vector3(0.3f, 0.05f, 20.6f), oak, false);
+            Box("Header", windows, new Vector3(-11.95f, 4.82f, 2.3f), new Vector3(0.1f, 0.1f, 20.6f), charcoal, false);
 
-                var btnGO = new GameObject($"Btn_{names[b]}");
-                btnGO.transform.SetParent(panelGO.transform);
-                var btnImg = btnGO.AddComponent<Image>();
-                btnImg.color = new Color(0.18f, 0.22f, 0.30f);
-                var btn = btnGO.AddComponent<Button>();
-                buttons[b] = btn;
+            // East wall: oak slat feature wall.
+            var slats = Empty("SlatWall", shell, Vector3.zero).transform;
+            for (int i = 0; i < 40; i++)
+                Box($"Slat_{i}", slats, new Vector3(11.93f, 2.5f, -1.2f + i * 0.3f), new Vector3(0.06f, 4.2f, 0.12f), oak, false);
 
-                var btnRect = btnGO.GetComponent<RectTransform>();
-                float xMin = col == 0 ? 0.06f : 0.52f;
-                float xMax = col == 0 ? 0.48f : 0.94f;
-                float yMax = 0.75f - (row * 0.18f);
-                float yMin = yMax - 0.15f;
+            // Ceiling light panels and a halo above the manager platform.
+            var lights = Empty("CeilingLights", shell, Vector3.zero).transform;
+            for (int x = -2; x <= 2; x++)
+                for (int z = 0; z < 5; z++)
+                {
+                    if (x == 0 && (z == 1 || z == 2)) continue;
+                    Box($"Panel_{x}_{z}", lights, new Vector3(x * 4.6f, 5.58f, -6.5f + z * 4.2f), new Vector3(2.4f, 0.03f, 0.55f), panelLight, false);
+                }
+            Cyl("PlatformHalo", lights, new Vector3(0f, 5.585f, 0f), 2.4f, 0.03f, panelLight, false);
+            Cyl("PlatformHaloTrim", lights, new Vector3(0f, 5.59f, 0f), 2.55f, 0.02f, charcoal, false);
 
-                btnRect.anchorMin = new Vector2(xMin, yMin);
-                btnRect.anchorMax = new Vector2(xMax, yMax);
-                btnRect.offsetMin = Vector2.zero;
-                btnRect.offsetMax = Vector2.zero;
-
-                var labelGO = new GameObject("Text");
-                labelGO.transform.SetParent(btnGO.transform);
-                var labelTmp = labelGO.AddComponent<TextMeshProUGUI>();
-                labelTmp.text = names[b];
-                labelTmp.fontSize = 16;
-                labelTmp.alignment = TextAlignmentOptions.Center;
-                labelTmp.color = Color.white;
-                var labelRect = labelGO.GetComponent<RectTransform>();
-                labelRect.anchorMin = Vector2.zero;
-                labelRect.anchorMax = Vector2.one;
-                labelRect.offsetMin = Vector2.zero;
-                labelRect.offsetMax = Vector2.zero;
+            // Structural columns.
+            Material concrete = Mat("Env_Concrete", new Color(0.72f, 0.70f, 0.67f), 0.2f);
+            foreach (var p in new[] { new Vector3(-8.8f, 0f, -1f), new Vector3(8.8f, 0f, -1f), new Vector3(-8.8f, 0f, 9f), new Vector3(8.8f, 0f, 9f) })
+            {
+                Cyl("Column", shell, p + Vector3.up * 2.8f, 0.34f, 5.6f, concrete);
+                Cyl("ColumnBase", shell, p + Vector3.up * 0.06f, 0.4f, 0.12f, oak, false);
             }
 
-            // 7th Button: Mixed Reality Passthrough Toggle
-            var mrBtnGO = new GameObject("Btn_ToggleMR");
-            mrBtnGO.transform.SetParent(panelGO.transform);
-            var mrBtnImg = mrBtnGO.AddComponent<Image>();
-            mrBtnImg.color = new Color(0.12f, 0.45f, 0.78f);
-            var mrBtn = mrBtnGO.AddComponent<Button>();
-            var mrBtnRect = mrBtnGO.GetComponent<RectTransform>();
-            mrBtnRect.anchorMin = new Vector2(0.06f, 0.03f);
-            mrBtnRect.anchorMax = new Vector2(0.94f, 0.16f);
-            mrBtnRect.offsetMin = Vector2.zero;
-            mrBtnRect.offsetMax = Vector2.zero;
+            foreach (Transform t in shell.GetComponentsInChildren<Transform>(true))
+                if (t.GetComponent<Renderer>() != null && (t.name.StartsWith("Wall") || t.name == "Ceiling" || t.parent == lights))
+                    t.GetComponent<Renderer>().shadowCastingMode = ShadowCastingMode.Off;
+        }
 
-            var mrLabelGO = new GameObject("Text");
-            mrLabelGO.transform.SetParent(mrBtnGO.transform);
-            var mrLabelTmp = mrLabelGO.AddComponent<TextMeshProUGUI>();
-            mrLabelTmp.text = "Toggle Mixed Reality (Passthrough)";
-            mrLabelTmp.fontSize = 14;
-            mrLabelTmp.fontStyle = FontStyles.Bold;
-            mrLabelTmp.alignment = TextAlignmentOptions.Center;
-            mrLabelTmp.color = Color.white;
-            var mrLabelRect = mrLabelGO.GetComponent<RectTransform>();
-            mrLabelRect.anchorMin = Vector2.zero;
-            mrLabelRect.anchorMax = Vector2.one;
-            mrLabelRect.offsetMin = Vector2.zero;
-            mrLabelRect.offsetMax = Vector2.zero;
+        private static void BuildDecor(Transform decor)
+        {
+            Material pot = Mat("Decor_Pot", Palette.Terracotta, 0.2f);
+            Material potDark = Mat("Decor_PotDark", Palette.Graphite, 0.4f);
+            Material leaf = Mat("Decor_Leaf", Palette.Leaf, 0.15f);
+            Material leafLight = Mat("Decor_LeafLight", Palette.LeafLight, 0.15f);
+            Material fabric = Mat("Decor_Fabric", Palette.Fabric, 0.05f);
+            Material oak = Mat("Env_Oak", Palette.Oak, 0.35f);
+            Material charcoal = Mat("Env_Charcoal", Palette.Charcoal, 0.3f);
 
-            mrBtn.onClick.AddListener(() => {
-                var pt = Object.FindAnyObjectByType<PassthroughToggle>();
-                pt?.ToggleMode();
-            });
+            void Plant(Vector3 p, float s, bool dark)
+            {
+                var root = Empty("Plant", decor, p).transform;
+                Cyl("Pot", root, new Vector3(0f, 0.28f * s, 0f), 0.27f * s, 0.56f * s, dark ? potDark : pot);
+                Ball("Leaves", root, new Vector3(0f, 0.95f * s, 0f), new Vector3(0.75f, 0.8f, 0.75f) * s, leaf);
+                Ball("Leaves2", root, new Vector3(0.18f * s, 1.3f * s, 0.08f * s), new Vector3(0.5f, 0.6f, 0.5f) * s, leafLight);
+                Ball("Leaves3", root, new Vector3(-0.15f * s, 1.15f * s, -0.12f * s), new Vector3(0.55f, 0.55f, 0.55f) * s, leaf);
+            }
+            Plant(new Vector3(-11.0f, 0f, 13.6f), 1.3f, false);
+            Plant(new Vector3(11.0f, 0f, 13.6f), 1.3f, true);
+            Plant(new Vector3(-5.6f, 0f, 13.8f), 1.0f, true);
+            Plant(new Vector3(5.6f, 0f, 13.8f), 1.0f, false);
+            Plant(new Vector3(11.1f, 0f, -2.2f), 1.1f, false);
+            Plant(new Vector3(-11.0f, 0f, -8.2f), 1.2f, true);
+            Plant(new Vector3(-3.6f, 0f, -8.4f), 0.9f, false);
+            Plant(new Vector3(4.4f, 0f, -8.4f), 0.9f, true);
+            Plant(new Vector3(-11.1f, 0f, 12.0f), 0.8f, true);
 
-            var layoutUI = panelGO.AddComponent<LayoutSelectorUI>();
-            var uiSO = new SerializedObject(layoutUI);
-            var btnArr = uiSO.FindProperty("layoutButtons");
-            btnArr.arraySize = 6;
+            // Lounge in the south-west corner.
+            var lounge = Empty("Lounge", decor, new Vector3(-8.0f, 0f, -6.9f)).transform;
+            Box("SofaSeat", lounge, new Vector3(0f, 0.22f, 0f), new Vector3(2.6f, 0.44f, 0.95f), fabric);
+            Box("SofaBack", lounge, new Vector3(0f, 0.62f, -0.4f), new Vector3(2.6f, 0.5f, 0.2f), fabric, false);
+            Box("SofaArmL", lounge, new Vector3(-1.38f, 0.42f, 0f), new Vector3(0.18f, 0.5f, 0.95f), fabric, false);
+            Box("SofaArmR", lounge, new Vector3(1.38f, 0.42f, 0f), new Vector3(0.18f, 0.5f, 0.95f), fabric, false);
+            Cyl("CoffeeTable", lounge, new Vector3(0f, 0.38f, 1.2f), 0.5f, 0.05f, oak);
+            Cyl("CoffeeTableLeg", lounge, new Vector3(0f, 0.18f, 1.2f), 0.06f, 0.36f, charcoal, false);
+        }
+
+        // ══ Manager platform & review desk ═══════════════════════════════════
+
+        private struct DeskParts { public ReviewDesk desk; }
+
+        private static DeskParts BuildPlatform(Transform platform)
+        {
+            Material plinth = Mat("Platform_Plinth", Palette.Charcoal, 0.35f);
+            Material top = Mat("Platform_Top", new Color(0.33f, 0.31f, 0.29f), 0.15f);
+            Material oak = Mat("Env_Oak", Palette.Oak, 0.35f);
+            Material walnut = Mat("Platform_Walnut", Palette.Walnut, 0.45f);
+            Material glass = Glass("Glass_Clear", new Color(0.85f, 0.93f, 0.97f), 0.18f);
+            Material glow = Emissive("Accent_TealGlow", Palette.Teal, 1.6f);
+            Material paper = Mat("Paper", Palette.Paper, 0.1f);
+
+            Cyl("Base", platform, new Vector3(0f, PlatformHeight * 0.5f, 0f), PlatformRadius, PlatformHeight, plinth);
+            Cyl("Kick", platform, new Vector3(0f, 0.05f, 0f), PlatformRadius + 0.12f, 0.1f, plinth, false);
+            var deck = Cyl("Deck", platform, new Vector3(0f, PlatformHeight - 0.02f, 0f), PlatformRadius, 0.04f, top);
+            deck.AddComponent<UnityEngine.XR.Interaction.Toolkit.Locomotion.Teleportation.TeleportationArea>();
+            Cyl("EdgeGlow", platform, new Vector3(0f, PlatformHeight - 0.07f, 0f), PlatformRadius + 0.02f, 0.03f, glow, false);
+
+            // Glass balustrade with an oak handrail; open at the front (desk) and back (stairs).
+            const int segments = 20;
+            for (int i = 0; i < segments; i++)
+            {
+                float deg = i * 360f / segments + 9f;
+                if (deg < 60f || deg > 300f) continue;          // front: the desk
+                if (deg > 162f && deg < 198f) continue;          // back: stairs
+                float a = deg * Mathf.Deg2Rad;
+                Vector3 p = new Vector3(Mathf.Sin(a), 0f, Mathf.Cos(a)) * (PlatformRadius - 0.06f);
+                float width = 2f * Mathf.PI * PlatformRadius / segments;
+                Box($"Glass_{i}", platform, p + Vector3.up * (PlatformHeight + 0.48f), new Vector3(width, 0.9f, 0.02f), glass, true, new Vector3(0f, deg, 0f));
+                Box($"Rail_{i}", platform, p + Vector3.up * (PlatformHeight + 0.95f), new Vector3(width + 0.02f, 0.045f, 0.07f), oak, false, new Vector3(0f, deg, 0f));
+            }
+
+            // Stairs down the back.
+            const int steps = 8;
+            float rise = PlatformHeight / steps;
+            for (int i = 0; i < steps; i++)
+            {
+                float h = PlatformHeight - rise * (i + 1);
+                float z = -PlatformRadius + 0.12f - 0.3f * i - 0.15f;
+                if (h <= 0.001f) break;
+                Box($"Step_{i}", platform, new Vector3(0f, h * 0.5f, z), new Vector3(1.3f, h, 0.3f), i % 2 == 0 ? walnut : top);
+            }
+
+            // Review desk: centre slab plus two angled wings.
+            var deskRoot = Empty("ReviewDesk", platform, Vector3.zero).transform;
+            Box("DeskTop", deskRoot, new Vector3(0f, DeskTopY - 0.025f, 1.35f), new Vector3(1.4f, 0.05f, 0.66f), walnut);
+            Box("DeskPedestal", deskRoot, new Vector3(0f, PlatformHeight + 0.41f, 1.45f), new Vector3(1.3f, 0.82f, 0.4f), plinth);
+            Box("DeskFrontGlow", deskRoot, new Vector3(0f, DeskTopY - 0.05f, 1.69f), new Vector3(1.38f, 0.02f, 0.02f), glow, false);
+            foreach (int side in new[] { -1, 1 })
+            {
+                float yaw = 35f * side;
+                Vector3 wingPos = new Vector3(side * (0.7f + 0.42f * Mathf.Cos(35f * Mathf.Deg2Rad)), DeskTopY - 0.025f,
+                    1.35f - 0.42f * Mathf.Sin(35f * Mathf.Deg2Rad));
+                Box(side < 0 ? "WingLeft" : "WingRight", deskRoot, wingPos, new Vector3(0.86f, 0.05f, 0.6f), walnut, true, new Vector3(0f, yaw, 0f));
+                Box(side < 0 ? "WingLeftLeg" : "WingRightLeg", deskRoot, new Vector3(wingPos.x, PlatformHeight + 0.41f, wingPos.z), new Vector3(0.6f, 0.82f, 0.3f), plinth, true, new Vector3(0f, yaw, 0f));
+            }
+
+            // Done tray (approved pages stack up here).
+            var tray = Box("DoneTray", deskRoot, new Vector3(0.5f, DeskTopY + 0.01f, 1.5f), new Vector3(0.28f, 0.02f, 0.36f), plinth, false);
+            var stackRoot = Empty("DoneStackRoot", deskRoot, new Vector3(0.5f, DeskTopY + 0.02f, 1.5f)).transform;
+            var stack = Box("DoneStack", stackRoot, new Vector3(0f, 0.001f, 0f), new Vector3(0.22f, 0.002f, 0.3f), paper, false);
+
+            var reviewAnchor = Empty("ReviewAnchor", deskRoot, new Vector3(0f, DeskTopY + 0.5f, 1.52f), new Vector3(14f, 0f, 0f));
+            var trayAnchor = Empty("TrayAnchor", deskRoot, new Vector3(0.5f, DeskTopY + 0.03f, 1.5f));
+
+            var desk = deskRoot.gameObject.AddComponent<ReviewDesk>();
+            Wire(desk, "reviewAnchor", reviewAnchor.transform);
+            Wire(desk, "doneTray", trayAnchor.transform);
+            Wire(desk, "doneStack", stack.transform);
+
+            // Warm key light over the desk.
+            var key = new GameObject("DeskLight").AddComponent<Light>();
+            key.transform.SetParent(platform, false);
+            key.transform.localPosition = new Vector3(0f, 4.6f, 0.8f);
+            key.type = LightType.Point;
+            key.range = 5.5f;
+            key.intensity = 1.6f;
+            key.color = new Color(1f, 0.92f, 0.82f);
+            key.shadows = LightShadows.None;
+
+            return new DeskParts { desk = desk };
+        }
+
+        private static LiftPad BuildLift()
+        {
+            Material plinth = Mat("Platform_Plinth", Palette.Charcoal, 0.35f);
+            Material steel = Mat("Lift_Steel", new Color(0.55f, 0.57f, 0.6f), 0.7f, 0.8f);
+            Material glow = Emissive("Accent_AmberGlow", Palette.Amber, 1.8f);
+            Material top = Mat("Platform_Top", new Color(0.33f, 0.31f, 0.29f), 0.15f);
+
+            var root = Empty("PresentationLift", null, LiftCenter).transform;
+            var housing = Cyl("Housing", root, new Vector3(0f, 0.025f, 0f), 0.6f, 0.05f, plinth, false);
+            Cyl("HousingGlow", root, new Vector3(0f, 0.03f, 0f), 0.63f, 0.04f, glow, false);
+            var piston = Cyl("Piston", root, new Vector3(0f, 0.025f, 0f), 0.2f, 0.05f, steel, false);
+            var platform = Empty("Platform", root, new Vector3(0f, 0.05f, 0f)).transform;
+            Cyl("Disc", platform, new Vector3(0f, -0.03f, 0f), 0.48f, 0.06f, top, false);
+            Cyl("DiscGlow", platform, new Vector3(0f, -0.035f, 0f), 0.5f, 0.03f, glow, false);
+
+            var faceTarget = Empty("FaceTarget", null, ManagerStand + Vector3.up * 1.5f).transform;
+            faceTarget.SetParent(root, true);
+
+            var lift = root.gameObject.AddComponent<LiftPad>();
+            Wire(lift, "platform", platform);
+            Wire(lift, "piston", piston.transform);
+            Wire(lift, "faceTowards", faceTarget);
+            var so = new SerializedObject(lift);
+            so.FindProperty("highY").floatValue = PlatformHeight;
+            so.ApplyModifiedPropertiesWithoutUndo();
+
+            var mod = root.gameObject.AddComponent<NavMeshModifier>();
+            mod.ignoreFromBuild = true;
+            return lift;
+        }
+
+        private static Transform BuildQueueLane()
+        {
+            Material amber = Emissive("Accent_AmberGlow", Palette.Amber, 1.8f);
+            Material marker = Emissive("Queue_Marker", new Color(1f, 0.8f, 0.45f), 0.9f);
+            var root = Empty("QueueLane", null, Vector3.zero).transform;
+            var start = Empty("QueueStart", root, QueueStart).transform;
+            for (int i = 0; i < 5; i++)
+                Cyl($"Slot_{i}", root, QueueStart + new Vector3(0f, 0.014f, i * 1.1f), 0.24f, 0.012f, marker, false);
+            Box("LaneEdgeL", root, new Vector3(-0.7f, 0.012f, 6.2f), new Vector3(0.04f, 0.01f, 6.4f), amber, false);
+            Box("LaneEdgeR", root, new Vector3(0.7f, 0.012f, 6.2f), new Vector3(0.04f, 0.01f, 6.4f), amber, false);
+            NoShadows(root.gameObject);
+            return start;
+        }
+
+        // ══ Workstations ═════════════════════════════════════════════════════
+
+        private static List<Workstation> BuildWorkstations(Transform parent)
+        {
+            Material oak = Mat("Env_Oak", Palette.Oak, 0.35f);
+            Material charcoal = Mat("Env_Charcoal", Palette.Charcoal, 0.3f);
+            Material chair = Mat("Desk_Chair", Palette.Fabric, 0.1f);
+            Material screen = Emissive("Desk_Screen", new Color(0.35f, 0.6f, 0.95f), 0.8f);
+            Material bar = Emissive("Desk_StatusBar", Palette.Teal, 1.6f);
+            Material mug = Mat("Desk_Mug", new Color(0.95f, 0.95f, 0.93f), 0.6f);
+
+            var poses = WorkspaceLayout.Generate(LayoutType.Grid, WorkstationCount, Vector3.zero);
+            var list = new List<Workstation>();
+            for (int i = 0; i < WorkstationCount; i++)
+            {
+                var root = Empty($"Workstation_{i + 1}", parent, poses[i].position).transform;
+                root.rotation = poses[i].rotation;
+
+                Box("DeskTop", root, new Vector3(0f, 0.74f, 0f), new Vector3(1.4f, 0.04f, 0.72f), oak);
+                Box("SideL", root, new Vector3(-0.67f, 0.36f, 0f), new Vector3(0.04f, 0.72f, 0.66f), charcoal);
+                Box("SideR", root, new Vector3(0.67f, 0.36f, 0f), new Vector3(0.04f, 0.72f, 0.66f), charcoal);
+                Box("Modesty", root, new Vector3(0f, 0.47f, 0.33f), new Vector3(1.3f, 0.44f, 0.02f), charcoal);
+                Cyl("MonitorStand", root, new Vector3(0f, 0.9f, 0.22f), 0.03f, 0.3f, charcoal, false);
+                Box("Monitor", root, new Vector3(0f, 1.13f, 0.24f), new Vector3(0.68f, 0.41f, 0.035f), charcoal);
+                var scr = Box("Screen", root, new Vector3(0f, 1.13f, 0.221f), new Vector3(0.64f, 0.37f, 0.004f), screen, false);
+                var statusBar = Box("StatusBar", root, new Vector3(0f, 1.355f, 0.24f), new Vector3(0.68f, 0.035f, 0.05f), bar, false);
+                Box("Keyboard", root, new Vector3(0f, 0.765f, -0.12f), new Vector3(0.42f, 0.015f, 0.14f), charcoal, false);
+                Cyl("Mug", root, new Vector3(0.5f, 0.81f, -0.08f), 0.04f, 0.1f, mug, false);
+
+                Cyl("ChairBase", root, new Vector3(0f, 0.03f, -0.62f), 0.28f, 0.04f, charcoal, false);
+                Cyl("ChairPost", root, new Vector3(0f, 0.24f, -0.62f), 0.035f, 0.38f, charcoal, false);
+                var seat = Box("ChairSeat", root, new Vector3(0f, 0.44f, -0.62f), new Vector3(0.5f, 0.08f, 0.48f), chair, false);
+                var back = Box("ChairBack", root, new Vector3(0f, 0.78f, -0.88f), new Vector3(0.48f, 0.55f, 0.06f), chair, false, new Vector3(-8f, 0f, 0f));
+
+                var plateCanvas = WorldCanvas("Nameplate", root, new Vector3(0f, 0.6f, 0.345f), new Vector3(0f, 180f, 0f), new Vector2(1000f, 160f), 0.001f);
+                var plate = Text("Name", plateCanvas.transform, "AGENT", 110f, new Color(0.95f, 0.95f, 0.95f), Vector2.zero, new Vector2(1000f, 160f), TextAlignmentOptions.Center, true);
+                plate.characterSpacing = 12f;
+
+                var seatPoint = Empty("SeatPoint", root, new Vector3(0f, 0f, -0.62f));
+                var approach = Empty("ApproachPoint", root, new Vector3(0f, 0f, -1.3f));
+
+                var ws = root.gameObject.AddComponent<Workstation>();
+                Wire(ws, "seatPoint", seatPoint.transform);
+                Wire(ws, "approachPoint", approach.transform);
+                Wire(ws, "screen", scr.GetComponent<Renderer>());
+                Wire(ws, "statusBar", statusBar.GetComponent<Renderer>());
+                WireArray(ws, "chairRenderers", new Object[] { seat.GetComponent<Renderer>(), back.GetComponent<Renderer>() });
+                Wire(ws, "nameplate", plate);
+
+                var obstacle = root.gameObject.AddComponent<NavMeshObstacle>();
+                obstacle.shape = NavMeshObstacleShape.Box;
+                obstacle.center = new Vector3(0f, 0.5f, 0f);
+                obstacle.size = new Vector3(1.42f, 1f, 0.74f);
+                obstacle.carving = true;
+                root.gameObject.AddComponent<NavMeshModifier>().ignoreFromBuild = true;
+
+                var drag = root.gameObject.AddComponent<FloorDragInteractable>();
+                Wire(drag, "workstation", ws);
+                list.Add(ws);
+            }
+            return list;
+        }
+
+        // ══ Discussion room ══════════════════════════════════════════════════
+
+        private static MeetingRoom BuildMeetingRoom(Transform walls)
+        {
+            Material glass = Glass("Glass_Clear", new Color(0.85f, 0.93f, 0.97f), 0.18f);
+            Material frame = Mat("Env_Charcoal", Palette.Charcoal, 0.3f);
+            Material oak = Mat("Env_Oak", Palette.Oak, 0.35f);
+            Material chair = Mat("Desk_Chair", Palette.Fabric, 0.1f);
+            Material screenMat = Emissive("Meeting_Screen", new Color(0.3f, 0.5f, 0.8f), 0.7f);
+
+            const float x0 = 7.2f, x1 = 11.95f, z0 = -8.95f, z1 = -3.2f;
+            const float h = 2.7f;
+            // West glass wall.
+            Box("GlassWest", walls, new Vector3(x0, h * 0.5f, (z0 + z1) * 0.5f), new Vector3(0.03f, h, z1 - z0), glass);
+            // North glass wall with a door gap between x = 8.9 and 10.4.
+            Box("GlassNorthA", walls, new Vector3((9.3f + x1) * 0.5f, h * 0.5f, z1), new Vector3(x1 - 9.3f, h, 0.03f), glass);
+            Box("GlassNorthB", walls, new Vector3((x0 + 7.9f) * 0.5f, h * 0.5f, z1), new Vector3(7.9f - x0, h, 0.03f), glass);
+            Box("DoorHeader", walls, new Vector3(8.6f, h - 0.1f, z1), new Vector3(1.4f, 0.2f, 0.06f), frame, false);
+            foreach (var p in new[] { new Vector3(x0, 0f, z1), new Vector3(x0, 0f, z0 + 0.1f), new Vector3(7.9f, 0f, z1), new Vector3(9.3f, 0f, z1), new Vector3(x1 - 0.05f, 0f, z1) })
+                Box("Post", walls, p + Vector3.up * h * 0.5f, new Vector3(0.07f, h, 0.07f), frame, false);
+            Box("TopRailWest", walls, new Vector3(x0, h, (z0 + z1) * 0.5f), new Vector3(0.07f, 0.07f, z1 - z0), frame, false);
+            Box("TopRailNorth", walls, new Vector3((x0 + x1) * 0.5f, h, z1), new Vector3(x1 - x0, 0.07f, 0.07f), frame, false);
+
+            var room = Empty("DiscussionRoom", null, new Vector3(9.6f, 0f, -6.1f)).transform;
+            Cyl("TableTop", room, new Vector3(0f, 0.74f, 0f), 1.05f, 0.05f, oak);
+            Cyl("TablePedestal", room, new Vector3(0f, 0.36f, 0f), 0.16f, 0.72f, frame);
+            Cyl("TableFoot", room, new Vector3(0f, 0.02f, 0f), 0.5f, 0.04f, frame, false);
+            Box("WallScreen", room, new Vector3(2.3f, 1.6f, 0f), new Vector3(0.04f, 1.1f, 1.9f), screenMat, false);
+
+            var label = WorldCanvas("Sign", room, new Vector3(-1.0f, 2.95f, 2.94f), new Vector3(0f, 180f, 0f), new Vector2(1600f, 220f), 0.001f);
+            Text("Text", label.transform, "DISCUSSION ROOM", 150f, Palette.Charcoal, Vector2.zero, new Vector2(1600f, 220f), TextAlignmentOptions.Center, true).characterSpacing = 10f;
+
+            var seats = new List<Object>();
             for (int i = 0; i < 6; i++)
-                btnArr.GetArrayElementAtIndex(i).objectReferenceValue = buttons[i];
-            uiSO.FindProperty("currentLayoutLabel").objectReferenceValue = curTmp;
-            uiSO.FindProperty("panelGroup").objectReferenceValue = group;
-            uiSO.ApplyModifiedProperties();
+            {
+                float a = (i * 60f + 30f) * Mathf.Deg2Rad;
+                Vector3 p = new Vector3(Mathf.Sin(a), 0f, Mathf.Cos(a)) * 1.6f;
+                Quaternion face = Quaternion.LookRotation(-p.normalized);
+                var seatRoot = Empty($"Seat_{i}", room, p).transform;
+                seatRoot.localRotation = face;
+                Box("ChairSeat", seatRoot, new Vector3(0f, 0.44f, 0f), new Vector3(0.5f, 0.08f, 0.48f), chair, false);
+                Box("ChairBack", seatRoot, new Vector3(0f, 0.78f, -0.26f), new Vector3(0.48f, 0.55f, 0.06f), chair, false);
+                Cyl("ChairPost", seatRoot, new Vector3(0f, 0.22f, 0f), 0.035f, 0.4f, frame, false);
+                seats.Add(seatRoot);
+            }
 
-            return panelGO;
+            var meeting = room.gameObject.AddComponent<MeetingRoom>();
+            WireArray(meeting, "seats", seats.ToArray());
+            return meeting;
         }
 
-        // ── Helper: Agent Detail Inspector UI Panel ───────────────────────────
-        private static GameObject CreateAgentDetailPanel(Transform parent)
+        // ══ Lighting ═════════════════════════════════════════════════════════
+
+        private static void BuildLighting()
         {
-            var panelGO = new GameObject("AgentDetailPanel");
-            panelGO.transform.SetParent(parent);
-            // Angled on the right of manager's desk (ergonomic compact console)
-            panelGO.transform.position = new Vector3(0.75f, 1.30f, -0.92f);
-            panelGO.transform.rotation = Quaternion.Euler(12f, -22f, 0);
+            var sun = new GameObject("Sun").AddComponent<Light>();
+            sun.type = LightType.Directional;
+            sun.transform.rotation = Quaternion.Euler(42f, 64f, 0f);
+            sun.color = new Color(1f, 0.95f, 0.86f);
+            sun.intensity = 1.25f;
+            sun.shadows = LightShadows.Soft;
+            sun.shadowStrength = 0.55f;
 
-            var canvas = panelGO.AddComponent<Canvas>();
-            canvas.renderMode = RenderMode.WorldSpace;
-            panelGO.AddComponent<CanvasScaler>();
-            panelGO.AddComponent<GraphicRaycaster>();
-            panelGO.AddComponent<UnityEngine.XR.Interaction.Toolkit.UI.TrackedDeviceGraphicRaycaster>();
-            var group = panelGO.AddComponent<CanvasGroup>();
-
-            var rt = panelGO.GetComponent<RectTransform>();
-            rt.sizeDelta = new Vector2(340, 260);
-            rt.localScale = Vector3.one * 0.00085f;
-
-            // Background
-            var bgGO = new GameObject("Background");
-            bgGO.transform.SetParent(panelGO.transform);
-            var bgImg = bgGO.AddComponent<Image>();
-            bgImg.color = new Color(0.08f, 0.10f, 0.15f, 0.95f);
-            var bgRect = bgGO.GetComponent<RectTransform>();
-            bgRect.anchorMin = Vector2.zero;
-            bgRect.anchorMax = Vector2.one;
-            bgRect.offsetMin = Vector2.zero;
-            bgRect.offsetMax = Vector2.zero;
-
-            // Status Bar
-            var barGO = new GameObject("StatusBar");
-            barGO.transform.SetParent(panelGO.transform);
-            var barImg = barGO.AddComponent<Image>();
-            barImg.color = Color.green;
-            var barRect = barGO.GetComponent<RectTransform>();
-            barRect.anchorMin = new Vector2(0, 0.96f);
-            barRect.anchorMax = Vector2.one;
-            barRect.offsetMin = Vector2.zero;
-            barRect.offsetMax = Vector2.zero;
-
-            // Agent Name
-            var nameGO = new GameObject("AgentName");
-            nameGO.transform.SetParent(panelGO.transform);
-            var nameTmp = nameGO.AddComponent<TextMeshProUGUI>();
-            nameTmp.text = "Select an Agent";
-            nameTmp.fontSize = 22;
-            nameTmp.fontStyle = FontStyles.Bold;
-            nameTmp.color = Color.white;
-            var nameRect = nameGO.GetComponent<RectTransform>();
-            nameRect.anchorMin = new Vector2(0.06f, 0.83f);
-            nameRect.anchorMax = new Vector2(0.94f, 0.95f);
-            nameRect.offsetMin = Vector2.zero;
-            nameRect.offsetMax = Vector2.zero;
-
-            // Role Text
-            var roleGO = new GameObject("AgentRole");
-            roleGO.transform.SetParent(panelGO.transform);
-            var roleTmp = roleGO.AddComponent<TextMeshProUGUI>();
-            roleTmp.text = "Pinch to inspect an agent";
-            roleTmp.fontSize = 15;
-            roleTmp.color = new Color(0.6f, 0.75f, 0.95f);
-            var roleRect = roleGO.GetComponent<RectTransform>();
-            roleRect.anchorMin = new Vector2(0.06f, 0.74f);
-            roleRect.anchorMax = new Vector2(0.94f, 0.83f);
-            roleRect.offsetMin = Vector2.zero;
-            roleRect.offsetMax = Vector2.zero;
-
-            // Status Text
-            var statusGO = new GameObject("StatusText");
-            statusGO.transform.SetParent(panelGO.transform);
-            var statusTmp = statusGO.AddComponent<TextMeshProUGUI>();
-            statusTmp.text = "Status: Idle";
-            statusTmp.fontSize = 16;
-            statusTmp.color = Color.green;
-            var statusRect = statusGO.GetComponent<RectTransform>();
-            statusRect.anchorMin = new Vector2(0.06f, 0.64f);
-            statusRect.anchorMax = new Vector2(0.94f, 0.73f);
-            statusRect.offsetMin = Vector2.zero;
-            statusRect.offsetMax = Vector2.zero;
-
-            // Task Description
-            var taskGO = new GameObject("TaskDescription");
-            taskGO.transform.SetParent(panelGO.transform);
-            var taskTmp = taskGO.AddComponent<TextMeshProUGUI>();
-            taskTmp.text = "Task: None assigned";
-            taskTmp.fontSize = 14;
-            taskTmp.color = new Color(0.85f, 0.85f, 0.9f);
-            var taskRect = taskGO.GetComponent<RectTransform>();
-            taskRect.anchorMin = new Vector2(0.06f, 0.40f);
-            taskRect.anchorMax = new Vector2(0.94f, 0.63f);
-            taskRect.offsetMin = Vector2.zero;
-            taskRect.offsetMax = Vector2.zero;
-
-            // Output Preview
-            var outGO = new GameObject("OutputPreview");
-            outGO.transform.SetParent(panelGO.transform);
-            var outTmp = outGO.AddComponent<TextMeshProUGUI>();
-            outTmp.text = "Output: Awaiting execution results...";
-            outTmp.fontSize = 13;
-            outTmp.color = new Color(0.7f, 0.7f, 0.75f);
-            var outRect = outGO.GetComponent<RectTransform>();
-            outRect.anchorMin = new Vector2(0.06f, 0.05f);
-            outRect.anchorMax = new Vector2(0.94f, 0.38f);
-            outRect.offsetMin = Vector2.zero;
-            outRect.offsetMax = Vector2.zero;
-
-            var detailComp = panelGO.AddComponent<AgentDetailPanel>();
-            var dSO = new SerializedObject(detailComp);
-            dSO.FindProperty("nameText").objectReferenceValue = nameTmp;
-            dSO.FindProperty("roleText").objectReferenceValue = roleTmp;
-            dSO.FindProperty("statusText").objectReferenceValue = statusTmp;
-            dSO.FindProperty("taskDescText").objectReferenceValue = taskTmp;
-            dSO.FindProperty("outputPreviewText").objectReferenceValue = outTmp;
-            dSO.FindProperty("statusColorBar").objectReferenceValue = barImg;
-            dSO.FindProperty("panelGroup").objectReferenceValue = group;
-            dSO.ApplyModifiedProperties();
-
-            return panelGO;
+            RenderSettings.ambientMode = AmbientMode.Trilight;
+            RenderSettings.ambientSkyColor = new Color(0.95f, 0.96f, 1.0f);
+            RenderSettings.ambientEquatorColor = new Color(0.84f, 0.81f, 0.77f);
+            RenderSettings.ambientGroundColor = new Color(0.70f, 0.66f, 0.62f);
+            RenderSettings.sun = sun;
+            RenderSettings.fog = false;
         }
 
-        // ── Helper: Virtual Keyboard UI ───────────────────────────────────────
-        private static GameObject CreateVirtualKeyboard(Transform parent)
+        // ══ Desk UI ══════════════════════════════════════════════════════════
+
+        private static VirtualKeyboardManager BuildKeyboard(Transform platform, ReviewDesk desk)
         {
-            var kbGO = new GameObject("VirtualKeyboard");
-            kbGO.transform.SetParent(parent);
-            // Resting ergonomically right in front of manager above desk surface
-            kbGO.transform.position = new Vector3(0, 1.18f, -0.85f);
-            kbGO.transform.rotation = Quaternion.Euler(22f, 0, 0);
+            var root = Empty("SurfaceKeyboard", platform, new Vector3(0f, DeskTopY + 0.07f, 1.18f), new Vector3(68f, 0f, 0f)).transform;
+            var canvas = WorldCanvas("KeyboardCanvas", root, Vector3.zero, Vector3.zero, new Vector2(680f, 420f), 0.001f);
+            Transform t = canvas.transform;
+            Panel("Backplate", t, Vector2.zero, new Vector2(680f, 420f), new Color(0.07f, 0.08f, 0.1f, 0.96f));
+            var prompt = Text("Prompt", t, "", 19f, Palette.Teal, new Vector2(0f, 186f), new Vector2(640f, 36f), TextAlignmentOptions.Left, true);
+            prompt.enableAutoSizing = true; prompt.fontSizeMin = 13f; prompt.fontSizeMax = 19f;
+            Panel("InputBox", t, new Vector2(0f, 140f), new Vector2(640f, 52f), new Color(0.15f, 0.17f, 0.21f));
+            var input = Text("Input", t, "", 22f, Palette.UiText, new Vector2(0f, 140f), new Vector2(620f, 48f), TextAlignmentOptions.Left);
+            input.overflowMode = TextOverflowModes.Ellipsis;
 
-            var canvas = kbGO.AddComponent<Canvas>();
-            canvas.renderMode = RenderMode.WorldSpace;
-            kbGO.AddComponent<CanvasScaler>();
-            kbGO.AddComponent<GraphicRaycaster>();
-            kbGO.AddComponent<UnityEngine.XR.Interaction.Toolkit.UI.TrackedDeviceGraphicRaycaster>();
+            var kb = root.gameObject.AddComponent<VirtualKeyboardManager>();
+            var keys = new List<Object>();
 
-            var rt = kbGO.GetComponent<RectTransform>();
-            rt.sizeDelta = new Vector2(400, 140);
-            rt.localScale = Vector3.one * 0.00080f;
+            string[] rows = { "1234567890", "qwertyuiop", "asdfghjkl'", "zxcvbnm,.?" };
+            for (int r = 0; r < rows.Length; r++)
+                for (int c = 0; c < rows[r].Length; c++)
+                {
+                    string ch = rows[r][c].ToString();
+                    keys.Add(Key(t, ch, ch, new Vector2(-283f + c * 63f + (r == 2 ? 10f : 0f), 76f - r * 56f), new Vector2(57f, 50f),
+                        VirtualKeyboardButton.ActionType.Character, Palette.UiButton));
+                }
+            float y = 76f - 4 * 56f;
+            keys.Add(Key(t, "SHIFT", "", new Vector2(-262f, y), new Vector2(100f, 50f), VirtualKeyboardButton.ActionType.Shift, new Color(0.25f, 0.28f, 0.34f)));
+            keys.Add(Key(t, "SPACE", "", new Vector2(-62f, y), new Vector2(286f, 50f), VirtualKeyboardButton.ActionType.Space, Palette.UiButton));
+            keys.Add(Key(t, "DEL", "", new Vector2(128f, y), new Vector2(80f, 50f), VirtualKeyboardButton.ActionType.Backspace, new Color(0.25f, 0.28f, 0.34f)));
+            keys.Add(Key(t, "ESC", "", new Vector2(214f, y), new Vector2(76f, 50f), VirtualKeyboardButton.ActionType.Cancel, new Color(0.45f, 0.22f, 0.22f)));
+            keys.Add(Key(t, "SEND", "", new Vector2(296f, y), new Vector2(76f, 50f), VirtualKeyboardButton.ActionType.Submit, new Color(0.16f, 0.55f, 0.48f)));
 
-            var previewGO = new GameObject("PreviewText");
-            previewGO.transform.SetParent(kbGO.transform);
-            var previewTmp = previewGO.AddComponent<TextMeshProUGUI>();
-            previewTmp.text = "Type feedback or instruction...";
-            previewTmp.fontSize = 18;
-            previewTmp.alignment = TextAlignmentOptions.Center;
-            previewTmp.color = Color.white;
-            var prevRect = previewGO.GetComponent<RectTransform>();
-            prevRect.anchorMin = new Vector2(0.05f, 0.65f);
-            prevRect.anchorMax = new Vector2(0.95f, 0.95f);
-            prevRect.offsetMin = Vector2.zero;
-            prevRect.offsetMax = Vector2.zero;
-
-            var kbComp = kbGO.AddComponent<VirtualKeyboardManager>();
-            var kbSO = new SerializedObject(kbComp);
-            kbSO.FindProperty("keyboardCanvas").objectReferenceValue = canvas;
-            kbSO.FindProperty("previewText").objectReferenceValue = previewTmp;
-            kbSO.ApplyModifiedProperties();
-
-            return kbGO;
+            Wire(kb, "visualRoot", canvas.gameObject);
+            Wire(kb, "promptText", prompt);
+            Wire(kb, "inputText", input);
+            Wire(kb, "desk", desk);
+            WireArray(kb, "keys", keys.ToArray());
+            return kb;
         }
 
-        // ── Primitive & Material Helpers ──────────────────────────────────────
-        private static GameObject CreatePrimitive(PrimitiveType type, string name, Vector3 pos, Vector3 scale)
+        private static VirtualKeyboardButton Key(Transform parent, string label, string ch, Vector2 pos, Vector2 size,
+            VirtualKeyboardButton.ActionType action, Color color)
         {
-            var go = GameObject.CreatePrimitive(type);
-            go.name = name;
-            go.transform.position = pos;
-            go.transform.localScale = scale;
-            return go;
+            var b = Button($"Key_{label}", parent, label, pos, size, color, out var text, label.Length > 1 ? 17f : 24f);
+            var key = b.gameObject.AddComponent<VirtualKeyboardButton>();
+            var so = new SerializedObject(key);
+            so.FindProperty("character").stringValue = ch;
+            so.FindProperty("action").enumValueIndex = (int)action;
+            so.FindProperty("label").objectReferenceValue = text;
+            so.ApplyModifiedPropertiesWithoutUndo();
+            return key;
         }
 
-        private static GameObject CreateWall(string name, Vector3 pos, Vector3 scale, Color color)
+        private static ManagerConsoleUI BuildConsole(Transform platform, HandGestureRecognizer recognizer)
         {
-            var wall = CreatePrimitive(PrimitiveType.Cube, name, pos, scale);
-            SetURPMaterial(wall, color);
-            return wall;
+            var canvas = WorldCanvas("ReviewConsole", platform, new Vector3(0f, DeskTopY + 0.075f, 1.62f), new Vector3(28f, 0f, 0f), new Vector2(640f, 170f), 0.001f);
+            Transform t = canvas.transform;
+            Panel("Background", t, Vector2.zero, new Vector2(640f, 170f), Palette.UiPanel);
+            var headline = Text("Headline", t, "All clear", 26f, Palette.UiText, new Vector2(-90f, 56f), new Vector2(440f, 40f), TextAlignmentOptions.Left, true);
+            var subline = Text("Subline", t, "", 18f, Palette.UiMuted, new Vector2(200f, 56f), new Vector2(220f, 40f), TextAlignmentOptions.Right);
+
+            var approve = Button("Approve", t, "APPROVE", new Vector2(-232f, -4f), new Vector2(146f, 60f), new Color(0.18f, 0.6f, 0.38f), out var approveLabel);
+            var changes = Button("Changes", t, "CHANGES", new Vector2(-78f, -4f), new Vector2(146f, 60f), new Color(0.78f, 0.5f, 0.16f), out _);
+            var answer = Button("Answer", t, "ANSWER", new Vector2(78f, -4f), new Vector2(146f, 60f), new Color(0.7f, 0.6f, 0.12f), out _);
+            var dismiss = Button("Dismiss", t, "DISMISS", new Vector2(232f, -4f), new Vector2(146f, 60f), new Color(0.42f, 0.25f, 0.27f), out _);
+
+            Panel("GestureTrack", t, new Vector2(0f, -58f), new Vector2(600f, 10f), new Color(0.2f, 0.22f, 0.26f));
+            var fill = Panel("GestureFill", t, new Vector2(0f, -58f), new Vector2(600f, 10f), Palette.Teal, false);
+            fill.type = Image.Type.Filled;
+            fill.fillMethod = Image.FillMethod.Horizontal;
+            fill.fillAmount = 0f;
+            var gestureLabel = Text("GestureLabel", t, "", 16f, Palette.Teal, new Vector2(0f, -74f), new Vector2(600f, 22f), TextAlignmentOptions.Center);
+
+            var ui = canvas.gameObject.AddComponent<ManagerConsoleUI>();
+            Wire(ui, "headline", headline);
+            Wire(ui, "subline", subline);
+            Wire(ui, "approveButton", approve);
+            Wire(ui, "approveLabel", approveLabel);
+            Wire(ui, "changesButton", changes);
+            Wire(ui, "answerButton", answer);
+            Wire(ui, "dismissButton", dismiss);
+            Wire(ui, "gestureFill", fill);
+            Wire(ui, "gestureLabel", gestureLabel);
+            Wire(ui, "gestures", recognizer);
+            return ui;
         }
 
-        private static void SetURPMaterial(GameObject go, Color color)
+        private static void BuildLayoutPanel(Transform platform, PassthroughToggle passthrough)
         {
-            var renderer = go.GetComponent<Renderer>();
-            if (renderer == null) return;
-            var shader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
-            var mat = new Material(shader) { color = color };
-            renderer.sharedMaterial = mat;
+            var canvas = WorldCanvas("WorkspacePanel", platform, new Vector3(-0.86f, DeskTopY + 0.27f, 1.08f), new Vector3(24f, -46f, 0f), new Vector2(480f, 470f), 0.001f);
+            Transform t = canvas.transform;
+            Panel("Background", t, Vector2.zero, new Vector2(480f, 470f), Palette.UiPanel);
+            Text("Title", t, "WORKSPACE", 22f, Palette.Teal, new Vector2(0f, 205f), new Vector2(440f, 32f), TextAlignmentOptions.Left, true).characterSpacing = 6f;
+            var current = Text("Current", t, "Layout: Classroom", 22f, Palette.UiText, new Vector2(0f, 172f), new Vector2(440f, 32f));
+
+            var buttons = new List<Object>();
+            var highlights = new List<Object>();
+            for (int i = 0; i < 6; i++)
+            {
+                int col = i % 2, row = i / 2;
+                var b = Button($"Layout_{i}", t, WorkspaceLayout.DisplayName((LayoutType)i), new Vector2(col == 0 ? -113f : 113f, 112f - row * 70f),
+                    new Vector2(214f, 60f), Palette.UiButton, out _);
+                buttons.Add(b);
+                highlights.Add(b.targetGraphic);
+            }
+
+            var meeting = Button("Meeting", t, "GROUP DISCUSSION", new Vector2(0f, -110f), new Vector2(440f, 54f), new Color(0.32f, 0.36f, 0.55f), out var meetingLabel);
+            var auto = Button("AutoTasks", t, "AUTO TASKS: ON", new Vector2(0f, -170f), new Vector2(440f, 54f), new Color(0.24f, 0.3f, 0.36f), out var autoLabel);
+            var mr = Button("Passthrough", t, "MIXED REALITY", new Vector2(0f, -224f + 14f), new Vector2(440f, 40f), new Color(0.2f, 0.42f, 0.62f), out var mrLabel, 18f);
+
+            var ui = canvas.gameObject.AddComponent<LayoutSelectorUI>();
+            WireArray(ui, "layoutButtons", buttons.ToArray());
+            WireArray(ui, "layoutHighlights", highlights.ToArray());
+            Wire(ui, "currentLabel", current);
+            Wire(ui, "meetingButton", meeting);
+            Wire(ui, "meetingLabel", meetingLabel);
+            Wire(ui, "autoTasksButton", auto);
+            Wire(ui, "autoTasksLabel", autoLabel);
+            Wire(ui, "passthroughButton", mr);
+            Wire(ui, "passthroughLabel", mrLabel);
+            Wire(ui, "passthrough", passthrough);
         }
 
-        private static void SetURPMaterialEmissive(GameObject go, Color color, float emissiveIntensity)
+        private static void BuildDetailPanel(Transform platform)
         {
-            var renderer = go.GetComponent<Renderer>();
-            if (renderer == null) return;
-            var shader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
-            var mat = new Material(shader) { color = color };
-            mat.EnableKeyword("_EMISSION");
-            mat.SetColor("_EmissionColor", color * emissiveIntensity);
-            renderer.sharedMaterial = mat;
+            var canvas = WorldCanvas("AgentCard", platform, new Vector3(0.86f, DeskTopY + 0.27f, 1.08f), new Vector3(24f, 46f, 0f), new Vector2(480f, 470f), 0.001f);
+            Transform t = canvas.transform;
+            Panel("Background", t, Vector2.zero, new Vector2(480f, 470f), Palette.UiPanel);
+            var accent = Panel("Accent", t, new Vector2(0f, 226f), new Vector2(480f, 18f), Palette.Teal);
+            Text("Title", t, "SELECTED AGENT", 22f, Palette.Teal, new Vector2(0f, 190f), new Vector2(440f, 32f), TextAlignmentOptions.Left, true).characterSpacing = 6f;
+            var name = Text("Name", t, "", 36f, Palette.UiText, new Vector2(-60f, 146f), new Vector2(320f, 50f), TextAlignmentOptions.Left, true);
+            var pill = Panel("StatusPill", t, new Vector2(150f, 146f), new Vector2(150f, 40f), Palette.Teal);
+            var status = Text("Status", pill.transform, "", 17f, new Color(0.07f, 0.08f, 0.1f), Vector2.zero, new Vector2(150f, 40f), TextAlignmentOptions.Center, true);
+            var body = Text("Body", t, "", 21f, Palette.UiText, new Vector2(0f, 10f), new Vector2(440f, 210f), TextAlignmentOptions.TopLeft);
+            body.enableAutoSizing = true; body.fontSizeMin = 14f; body.fontSizeMax = 21f;
+            var assign = Button("Assign", t, "ASSIGN TASK", new Vector2(-50f, -180f), new Vector2(340f, 60f), new Color(0.16f, 0.55f, 0.48f), out var assignLabel);
+            var close = Button("Close", t, "X", new Vector2(176f, -180f), new Vector2(88f, 60f), new Color(0.3f, 0.32f, 0.37f), out _);
+
+            var ui = canvas.gameObject.AddComponent<AgentDetailPanel>();
+            Wire(ui, "accentBar", accent);
+            Wire(ui, "statusPill", pill);
+            Wire(ui, "nameText", name);
+            Wire(ui, "statusText", status);
+            Wire(ui, "bodyText", body);
+            Wire(ui, "assignButton", assign);
+            Wire(ui, "assignLabel", assignLabel);
+            Wire(ui, "closeButton", close);
         }
 
-        private static void CreatePointLight(string name, Vector3 pos, Color color, float intensity, float range, Transform parent)
+        private static void BuildTeamBoard(Transform parent)
         {
-            var go = new GameObject(name);
-            go.transform.position = pos;
-            go.transform.SetParent(parent);
-            var light = go.AddComponent<Light>();
-            light.type = LightType.Point;
-            light.color = color;
-            light.intensity = intensity;
-            light.range = range;
+            Material backing = Mat("Env_Charcoal", Palette.Charcoal, 0.3f);
+            var root = Empty("TeamBoard", parent, new Vector3(0f, 3.1f, 14.42f)).transform;
+            Box("Backing", root, new Vector3(0f, 0f, 0.05f), new Vector3(8.6f, 3.45f, 0.08f), backing, false);
+            var canvas = WorldCanvas("BoardCanvas", root, new Vector3(0f, 0f, -0.01f), Vector3.zero, new Vector2(1840f, 720f), 0.0045f);
+            Transform t = canvas.transform;
+            Panel("Background", t, Vector2.zero, new Vector2(1840f, 720f), new Color(0.08f, 0.09f, 0.11f, 1f));
+            var header = Text("Header", t, "", 58f, Palette.UiText, new Vector2(0f, 300f), new Vector2(1760f, 80f), TextAlignmentOptions.Left, true);
+            Panel("Rule", t, new Vector2(0f, 252f), new Vector2(1760f, 4f), new Color(0.25f, 0.27f, 0.3f), false);
+            var roster = Text("Roster", t, "", 52f, Palette.UiText, new Vector2(0f, -10f), new Vector2(1760f, 500f), TextAlignmentOptions.TopLeft);
+            roster.lineSpacing = 12f;
+            roster.overflowMode = TextOverflowModes.Truncate;
+            var footer = Text("Footer", t, "", 38f, Palette.UiMuted, new Vector2(0f, -310f), new Vector2(1760f, 60f), TextAlignmentOptions.Left);
+
+            var ui = canvas.gameObject.AddComponent<SessionDashboardUI>();
+            Wire(ui, "headerText", header);
+            Wire(ui, "rosterText", roster);
+            Wire(ui, "footerText", footer);
+        }
+
+        // ══ Utilities ════════════════════════════════════════════════════════
+
+        private static void MarkStatic(GameObject root)
+        {
+            foreach (Transform t in root.GetComponentsInChildren<Transform>(true))
+                GameObjectUtility.SetStaticEditorFlags(t.gameObject, StaticEditorFlags.BatchingStatic);
+        }
+
+        /// <summary>The default humanoid agent (radius 0.5) cannot fit the lift gap or desk aisles.</summary>
+        private static void SetNavAgentRadius(float radius)
+        {
+            var asset = AssetDatabase.LoadAllAssetsAtPath("ProjectSettings/NavMeshAreas.asset");
+            if (asset == null || asset.Length == 0) return;
+            var so = new SerializedObject(asset[0]);
+            var settings = so.FindProperty("m_Settings");
+            if (settings == null || settings.arraySize == 0) return;
+            var first = settings.GetArrayElementAtIndex(0);
+            first.FindPropertyRelative("agentRadius").floatValue = radius;
+            first.FindPropertyRelative("agentHeight").floatValue = 1.8f;
+            first.FindPropertyRelative("agentClimb").floatValue = 0.25f;
+            so.ApplyModifiedPropertiesWithoutUndo();
         }
 
         [MenuItem("Tools/AI Manager/Configure Android Build (Quest 3)")]
         public static void ConfigureAndroidBuild()
         {
-            Debug.Log("[SceneBuilder] Configuring Android build settings for Quest 3...");
-
             EditorUserBuildSettings.SwitchActiveBuildTarget(BuildTargetGroup.Android, BuildTarget.Android);
             PlayerSettings.SetApplicationIdentifier(UnityEditor.Build.NamedBuildTarget.Android, "com.garvchopra.aimanagerworkspace");
             PlayerSettings.productName = "AI Manager Workspace";
-            PlayerSettings.companyName = "Garv Chopra";
-            PlayerSettings.bundleVersion = "0.1.0";
-            PlayerSettings.Android.bundleVersionCode = 1;
             PlayerSettings.Android.minSdkVersion = AndroidSdkVersions.AndroidApiLevel29;
             PlayerSettings.Android.targetSdkVersion = AndroidSdkVersions.AndroidApiLevelAuto;
             PlayerSettings.SetScriptingBackend(UnityEditor.Build.NamedBuildTarget.Android, ScriptingImplementation.IL2CPP);
             PlayerSettings.Android.targetArchitectures = AndroidArchitecture.ARM64;
             PlayerSettings.colorSpace = ColorSpace.Linear;
-
-            // Trigger Meta OVRProjectSetup fixes for Android automatically via reflection
-            try
-            {
-                var ovrSetupType = System.Type.GetType("OVRProjectSetup, Meta.XR.SDK.Core.Editor")
-                                ?? System.Type.GetType("OVRProjectSetup, Oculus.VR.Editor");
-                if (ovrSetupType != null)
-                {
-                    var fixMethod = ovrSetupType.GetMethod("FixTasks", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-                    if (fixMethod != null)
-                    {
-                        var parameters = fixMethod.GetParameters();
-                        if (parameters.Length == 1)
-                        {
-                            fixMethod.Invoke(null, new object[] { BuildTargetGroup.Android });
-                        }
-                        else
-                        {
-                            fixMethod.Invoke(null, new object[] { BuildTargetGroup.Android, null, 0, true, null, false });
-                        }
-                        Debug.Log("[SceneBuilder] Meta OVRProjectSetup FixTasks triggered for Android.");
-                    }
-                }
-            }
-            catch (System.Exception ex)
-            {
-                Debug.LogWarning($"[SceneBuilder] OVRProjectSetup note: {ex.Message}");
-            }
-
-            Debug.Log("[SceneBuilder] ✅ Android/Quest 3 build settings successfully configured!");
-        }
-
-        [MenuItem("Tools/AI Manager/Inspect Active Scene")]
-        public static void InspectActiveScene()
-        {
-            var activeScene = EditorSceneManager.GetActiveScene();
-            Debug.Log($"[SceneInspection] Active Scene: '{activeScene.name}' path: '{activeScene.path}', isLoaded: {activeScene.isLoaded}");
-            var roots = activeScene.GetRootGameObjects();
-            Debug.Log($"[SceneInspection] Root GameObjects ({roots.Length}):");
-            foreach (var r in roots)
-            {
-                Debug.Log($"  - {r.name} (children: {r.transform.childCount})");
-            }
+            Debug.Log("[SceneBuilder] Android / Quest 3 build settings configured.");
         }
     }
 }
