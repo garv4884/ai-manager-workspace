@@ -1,49 +1,52 @@
 using UnityEngine;
-using UnityEngine.XR.ARFoundation;
 
 namespace AIManagerWorkspace
 {
     /// <summary>
-    /// Switches between the virtual office and mixed reality. In MR the room shell
-    /// (walls, floor, ceiling, decor) is hidden and the camera clears to transparent so the
-    /// Quest passthrough feed shows through; the platform, desks and agents stay.
-    /// Passthrough itself comes from AR Foundation's ARCameraManager with the
-    /// Meta OpenXR "Camera (Passthrough)" feature enabled.
+    /// Switches between the virtual office and mixed reality using the Meta Passthrough
+    /// building block (OVRPassthroughLayer). In MR the room shell is hidden and the camera clears
+    /// to transparent so your real room shows; the platform, desks and agents stay.
     /// </summary>
     public class PassthroughToggle : MonoBehaviour
     {
         [SerializeField] private GameObject[] hideInMixedReality;
-        [SerializeField] private Camera xrCamera;
 
+        private OVRPassthroughLayer layer;
+        private Camera cam;
         private CameraClearFlags originalFlags;
         private Color originalColor;
-        private ARCameraManager arCamera;
 
         public bool IsMixedReality { get; private set; }
 
         private void Start()
         {
-            if (xrCamera == null) xrCamera = Camera.main;
-            if (xrCamera != null)
-            {
-                originalFlags = xrCamera.clearFlags;
-                originalColor = xrCamera.backgroundColor;
-                arCamera = xrCamera.GetComponent<ARCameraManager>();
-                if (arCamera != null) arCamera.enabled = false;
-            }
+            layer = FindAnyObjectByType<OVRPassthroughLayer>(FindObjectsInactive.Include);
+            cam = Camera.main;
+            if (cam != null) { originalFlags = cam.clearFlags; originalColor = cam.backgroundColor; }
+            Apply();
         }
 
-        public void Toggle() => SetMixedReality(!IsMixedReality);
-
-        public void SetMixedReality(bool on)
+        public void Toggle()
         {
-            IsMixedReality = on;
-            foreach (var go in hideInMixedReality) if (go != null) go.SetActive(!on);
+            IsMixedReality = !IsMixedReality;
+            Apply();
+        }
 
-            if (xrCamera == null) return;
-            if (arCamera != null) arCamera.enabled = on;
-            xrCamera.clearFlags = on ? CameraClearFlags.SolidColor : originalFlags;
-            xrCamera.backgroundColor = on ? new Color(0f, 0f, 0f, 0f) : originalColor;
+        private void Apply()
+        {
+            foreach (var go in hideInMixedReality) if (go != null) go.SetActive(!IsMixedReality);
+            if (layer != null)
+            {
+                layer.gameObject.SetActive(true);
+                layer.enabled = IsMixedReality;
+                layer.hidden = !IsMixedReality;
+            }
+            if (cam == null) cam = Camera.main;
+            if (cam != null)
+            {
+                cam.clearFlags = IsMixedReality ? CameraClearFlags.SolidColor : originalFlags;
+                cam.backgroundColor = IsMixedReality ? new Color(0f, 0f, 0f, 0f) : originalColor;
+            }
         }
     }
 }

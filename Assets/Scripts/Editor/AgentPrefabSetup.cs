@@ -109,6 +109,7 @@ namespace AIManagerWorkspace
             Wire(controller, "page", page);
             Wire(controller, "selectionRing", selection);
 
+            SceneBuilder.AddRayTarget(root, col);
             var drag = root.AddComponent<FloorDragInteractable>();
             Wire(drag, "agent", controller);
 

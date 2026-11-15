@@ -24,7 +24,7 @@ namespace AIManagerWorkspace
             AgentManager agents = gm.Agents;
             QueueManager queue = gm.Queue;
 
-            int waiting = agents.Count(AgentStatus.WaitingForApproval) + agents.Count(AgentStatus.WaitingForInput);
+            int waiting = agents.Count(AgentStatus.WaitingForApproval) + agents.Count(AgentStatus.WaitingForInput) + agents.Count(AgentStatus.HasUpdate);
             headerText.text =
                 $"<color=#4FD1C5>TEAM</color>   " +
                 $"{Chip(AgentStatus.Free, agents.Count(AgentStatus.Free), "free")}   " +
@@ -37,18 +37,21 @@ namespace AIManagerWorkspace
             {
                 AgentData d = a.Data;
                 string task = a.CurrentTask != null ? a.CurrentTask.title : "-";
+                if (a.BacklogCount > 0) task += $" (+{a.BacklogCount})";
                 string where = d.ActivityLabel;
                 if (d.status == AgentStatus.Working && a.CurrentTask != null && d.activity == AgentActivity.AtDesk)
                     where = $"{Mathf.RoundToInt(a.CurrentTask.progress * 100f)}%";
-                sb.Append($"<color=#{ColorUtility.ToHtmlStringRGB(d.accentColor)}>|</color> <b>{d.agentName,-8}</b>")
-                  .Append($"<pos=22%><color=#{ColorUtility.ToHtmlStringRGB(d.StatusColor)}>{d.StatusLabel}</color>")
-                  .Append($"<pos=47%>{Trim(task, 26)}")
-                  .Append($"<pos=80%><color=#9AA3B2>{where}</color>\n");
+                sb.Append($"<color=#{ColorUtility.ToHtmlStringRGB(d.accentColor)}>|</color> <b>{d.agentName}</b> <size=70%><color=#9AA3B2>{d.agentRole}</color></size>")
+                  .Append($"<pos=30%><color=#{ColorUtility.ToHtmlStringRGB(d.StatusColor)}>{d.StatusLabel}</color>")
+                  .Append($"<pos=52%>{Trim(task, 24)}")
+                  .Append($"<pos=82%><color=#9AA3B2>{where}</color>\n");
             }
             rosterText.text = sb.ToString();
 
             string presenting = queue.Presenter != null ? queue.Presenter.Data.agentName : "nobody";
-            footerText.text =
+            var brief = gm.Planner.Active;
+            string goal = brief != null ? $"Goal: <b>{TaskLibrary.Trim(brief.goal, 34)}</b> ({brief.Finished}/{brief.tasks.Count})     " : "";
+            footerText.text = goal +
                 $"Presenting: <b>{presenting}</b>     In line: <b>{queue.Waiting.Count}</b>     " +
                 $"Approved today: <b>{queue.Desk.Completed}</b>     <color=#9AA3B2>{gm.AI.ModeLabel}</color>";
         }

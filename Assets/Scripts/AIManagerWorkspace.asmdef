@@ -2,14 +2,13 @@
     "name": "AIManagerWorkspace",
     "rootNamespace": "AIManagerWorkspace",
     "references": [
-        "Unity.XR.Interaction.Toolkit",
-        "Unity.XR.Hands",
         "Unity.AI.Navigation",
         "Unity.TextMeshPro",
         "UnityEngine.UI",
         "Unity.InputSystem",
-        "Unity.XR.CoreUtils",
-        "Unity.XR.ARFoundation"
+        "Oculus.VR",
+        "Oculus.Interaction",
+        "Oculus.Interaction.OVR"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

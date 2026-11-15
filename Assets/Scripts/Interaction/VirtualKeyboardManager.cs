@@ -3,23 +3,27 @@ using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using UnityEngine.UI;
 
 namespace AIManagerWorkspace
 {
     /// <summary>
-    /// Poke keyboard lying on the manager's desk. One keyboard serves every text request
-    /// (answer a question, give feedback, assign a task); each caller passes its own
-    /// submit callback and a validity check that closes the keyboard if the request expires.
-    /// In the Editor, the PC keyboard also types into it (Enter sends, Esc cancels).
+    /// Text display plus poke keyboard lying on the manager's desk. Used directly in the Editor
+    /// and as the fallback on device; when the Meta system keyboard is in use it only shows the
+    /// prompt and a live preview of what is being typed. In the Editor the PC keyboard also types
+    /// into it (Enter sends, Esc cancels).
     /// </summary>
     public class VirtualKeyboardManager : MonoBehaviour
     {
         [SerializeField] private GameObject visualRoot;
+        [SerializeField] private GameObject keysRoot;
+        [SerializeField] private Button useDeskButton;
+        [SerializeField] private TextInputService service;
         [SerializeField] private TextMeshProUGUI promptText;
         [SerializeField] private TextMeshProUGUI inputText;
         [SerializeField] private List<VirtualKeyboardButton> keys = new List<VirtualKeyboardButton>();
         [SerializeField] private ReviewDesk desk;
-        [SerializeField] private int maxLength = 280;
+        [SerializeField] private int maxLength = 400;
 
         private string text = "";
         private bool shift = true;
@@ -27,26 +31,32 @@ namespace AIManagerWorkspace
         private Action<string> onSubmit;
         private Func<bool> stillValid;
         private object owner;
+        private bool displayOnly;
 
-        public bool IsOpen => visualRoot != null && visualRoot.activeSelf;
+        public bool IsOpen => visualRoot != null && visualRoot.activeSelf && !displayOnly;
         public bool IsOpenFor(object o) => IsOpen && ReferenceEquals(owner, o);
 
         private void Awake()
         {
             foreach (var k in keys) if (k != null) k.Bind(this);
+            if (useDeskButton != null) useDeskButton.onClick.AddListener(() => service.SwitchToDesk());
             if (visualRoot != null) visualRoot.SetActive(false);
         }
 
-        public void Open(string prompt, object requestOwner, bool allowEmpty, Action<string> onSubmit, Func<bool> stillValid = null)
+        private bool masked;
+
+        public void Open(string prompt, object requestOwner, bool allowEmptyText, Action<string> submit, Func<bool> valid = null,
+            bool secret = false)
         {
+            masked = secret;
             owner = requestOwner;
-            this.allowEmpty = allowEmpty;
-            this.onSubmit = onSubmit;
-            this.stillValid = stillValid;
+            allowEmpty = allowEmptyText;
+            onSubmit = submit;
+            stillValid = valid;
+            displayOnly = false;
             text = "";
             shift = true;
-            if (promptText != null) promptText.text = prompt;
-            if (visualRoot != null) visualRoot.SetActive(true);
+            Show(prompt, true);
             RefreshKeys();
             RefreshText();
 
@@ -57,10 +67,36 @@ namespace AIManagerWorkspace
             }
         }
 
+        /// <summary>Prompt and preview only (the Meta system keyboard is doing the typing).</summary>
+        public void ShowDisplayOnly(string prompt, bool secret = false)
+        {
+            masked = secret;
+            displayOnly = true;
+            text = "";
+            Show(prompt, false);
+            RefreshText();
+        }
+
+        public void SetPreview(string value)
+        {
+            if (!displayOnly || value == text) return;
+            text = value ?? "";
+            RefreshText();
+        }
+
+        private void Show(string prompt, bool withKeys)
+        {
+            if (promptText != null) promptText.text = prompt;
+            if (keysRoot != null) keysRoot.SetActive(withKeys);
+            if (useDeskButton != null) useDeskButton.gameObject.SetActive(!withKeys);
+            if (visualRoot != null) visualRoot.SetActive(true);
+        }
+
         public void Close()
         {
             if (Keyboard.current != null) Keyboard.current.onTextInput -= OnHardwareText;
             if (visualRoot != null) visualRoot.SetActive(false);
+            displayOnly = false;
             onSubmit = null;
             stillValid = null;
             owner = null;
@@ -84,9 +120,10 @@ namespace AIManagerWorkspace
 
         private void OnHardwareText(char c)
         {
+            if (!IsOpen) return;
             if (c == '\b') { Backspace(); return; }
             if (char.IsControl(c)) return;
-            Append(c.ToString(), fromHardware: true);
+            Append(c.ToString(), true);
         }
 
         // ── Key actions ───────────────────────────────────────────────────────
@@ -94,7 +131,7 @@ namespace AIManagerWorkspace
         public void Type(string key)
         {
             if (string.IsNullOrEmpty(key)) return;
-            Append(shift ? key.ToUpperInvariant() : key.ToLowerInvariant(), fromHardware: false);
+            Append(shift ? key.ToUpperInvariant() : key.ToLowerInvariant(), false);
             if (shift) { shift = false; RefreshKeys(); }
         }
 
@@ -118,13 +155,17 @@ namespace AIManagerWorkspace
         public void Submit()
         {
             if (!allowEmpty && string.IsNullOrWhiteSpace(text)) return;
-            Action<string> callback = onSubmit;
+            Action<string> cb = onSubmit;
             string value = text;
             Close();
-            callback?.Invoke(value);
+            cb?.Invoke(value);
         }
 
-        public void Cancel() => Close();
+        public void Cancel()
+        {
+            if (displayOnly) service.Close();
+            else Close();
+        }
 
         private void Append(string s, bool fromHardware)
         {
@@ -143,8 +184,8 @@ namespace AIManagerWorkspace
         {
             if (inputText == null) return;
             inputText.text = text.Length == 0
-                ? "<color=#8A93A3>Type here...</color><color=#4FD1C5>|</color>"
-                : $"{text}<color=#4FD1C5>|</color>";
+                ? "<color=#8A93A3>" + (displayOnly ? "Type on the Meta keyboard..." : "Type here...") + "</color><color=#4FD1C5>|</color>"
+                : $"{(masked ? new string('*', Mathf.Min(text.Length, 40)) : text)}<color=#4FD1C5>|</color>";
         }
 
         private void RefreshKeys()

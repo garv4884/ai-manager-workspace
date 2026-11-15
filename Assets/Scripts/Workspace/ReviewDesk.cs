@@ -8,14 +8,14 @@ namespace AIManagerWorkspace
     /// </summary>
     public class ReviewDesk : MonoBehaviour
     {
-        public enum Sfx { Arrive, Approve, Changes, Dismiss, Key }
+        public enum Sfx { Arrive, Approve, Changes, Dismiss, Key, Notify }
 
         [SerializeField] private Transform reviewAnchor;
         [SerializeField] private Transform doneTray;
         [SerializeField] private Transform doneStack;
         [SerializeField] private AudioSource audioSource;
 
-        private AudioClip arrive, approve, changes, dismiss, key;
+        private AudioClip arrive, approve, changes, dismiss, key, notify;
 
         public Transform ReviewAnchor => reviewAnchor;
         public Transform DoneTray => doneTray;
@@ -31,6 +31,7 @@ namespace AIManagerWorkspace
             changes = Tone("changes", new[] { 494f, 392f }, 0.14f);
             dismiss = Tone("dismiss", new[] { 330f, 247f }, 0.12f);
             key = Tone("key", new[] { 1400f }, 0.025f);
+            notify = Tone("notify", new[] { 988f, 1319f }, 0.09f);
             UpdateStack();
         }
 
@@ -42,6 +43,21 @@ namespace AIManagerWorkspace
                 Sfx.Dismiss => dismiss, _ => key
             };
             if (clip != null) audioSource.PlayOneShot(clip, s == Sfx.Key ? 0.35f : 0.8f);
+        }
+
+        /// <summary>
+        /// Soft two-note chime played where an agent is, so you can hear who just finished
+        /// and turn towards them (fully spatial, quieter than the desk sounds).
+        /// </summary>
+        public void PlayNotifyAt(Vector3 position)
+        {
+            if (notify != null) AudioSource.PlayClipAtPoint(notify, position + Vector3.up * 1.2f, 0.55f);
+        }
+
+        public void SetCompleted(int count)
+        {
+            Completed = Mathf.Max(0, count);
+            UpdateStack();
         }
 
         public void AddCompleted()

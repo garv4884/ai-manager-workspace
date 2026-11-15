@@ -20,7 +20,7 @@ namespace AIManagerWorkspace
         [Header("Placement limits")]
         [SerializeField] private Vector2 roomMin = new Vector2(-11.0f, -8.2f);
         [SerializeField] private Vector2 roomMax = new Vector2(11.0f, 13.4f);
-        [SerializeField] private float platformClearRadius = 3.6f;
+        [SerializeField] private float platformClearRadius = 4.6f;
         [SerializeField] private float laneHalfWidth = 1.7f;
         [SerializeField] private float laneLength = 9.5f;
         [SerializeField] private Rect[] keepOut = { new Rect(6.6f, -9.2f, 6.0f, 6.6f) };   // meeting room
@@ -43,6 +43,22 @@ namespace AIManagerWorkspace
             Changed?.Invoke();
             if (transition != null) StopCoroutine(transition);
             transition = StartCoroutine(Animate(desks, poses, instant ? 0f : transitionSeconds));
+        }
+
+        /// <summary>Puts desks back where a saved session had them (no animation).</summary>
+        public void RestorePoses(LayoutType type, List<DeskPose> poses)
+        {
+            var desks = ActiveWorkstations();
+            if (poses == null || poses.Count < desks.Count)
+            {
+                if (type != LayoutType.Custom) ApplyLayout(type, instant: true);
+                return;
+            }
+            if (transition != null) { StopCoroutine(transition); transition = null; }
+            for (int i = 0; i < desks.Count; i++)
+                desks[i].transform.SetPositionAndRotation(poses[i].position, poses[i].rotation);
+            Current = type;
+            Changed?.Invoke();
         }
 
         public void MarkCustom()

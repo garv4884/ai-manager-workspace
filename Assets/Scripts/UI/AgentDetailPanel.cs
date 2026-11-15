@@ -14,17 +14,22 @@ namespace AIManagerWorkspace
         [SerializeField] private TextMeshProUGUI bodyText;
         [SerializeField] private Button assignButton;
         [SerializeField] private TextMeshProUGUI assignLabel;
+        [SerializeField] private Button roleButton;
+        [SerializeField] private Button nextButton;
         [SerializeField] private Button closeButton;
 
         private AgentController agent;
 
         private void Start()
         {
-            var agents = GameManager.Instance.Agents;
-            agents.SelectionChanged += Show;
-            agents.AnyAgentChanged += Refresh;
-            assignButton.onClick.AddListener(() => GameManager.Instance.OpenAssignTaskKeyboard(agent));
-            closeButton.onClick.AddListener(() => GameManager.Instance.Agents.Select(null));
+            GameManager gm = GameManager.Instance;
+            gm.Agents.SelectionChanged += Show;
+            gm.Agents.AnyAgentChanged += Refresh;
+            gm.Queue.Changed += Refresh;
+            assignButton.onClick.AddListener(() => gm.OpenAssignTaskKeyboard(agent));
+            roleButton.onClick.AddListener(() => gm.OpenRoleKeyboard(agent));
+            nextButton.onClick.AddListener(() => { gm.Queue.PromoteToFront(agent); Refresh(); });
+            closeButton.onClick.AddListener(() => gm.Agents.Select(null));
             Show(null);
         }
 
@@ -36,15 +41,19 @@ namespace AIManagerWorkspace
 
         private void Refresh()
         {
-            if (agent == null)
+            bool has = agent != null;
+            assignButton.gameObject.SetActive(has);
+            roleButton.gameObject.SetActive(has);
+            closeButton.gameObject.SetActive(has);
+
+            if (!has)
             {
                 nameText.text = "No agent selected";
                 statusText.text = "";
                 statusPill.color = new Color(0.3f, 0.33f, 0.38f);
                 accentBar.color = new Color(0.3f, 0.33f, 0.38f);
-                bodyText.text = "Point at an agent or a desk and pinch to select it.\nPinch and sweep to slide a desk somewhere else.";
-                assignButton.interactable = false;
-                closeButton.gameObject.SetActive(false);
+                bodyText.text = "Point at an agent or desk and pinch to select it.\nPinch and sweep to slide a desk.\n\nTo give everyone one goal, use BRIEF THE TEAM on the left panel or your wrist menu.";
+                nextButton.gameObject.SetActive(false);
                 return;
             }
 
@@ -54,15 +63,16 @@ namespace AIManagerWorkspace
             statusText.text = d.StatusLabel;
             statusPill.color = d.StatusColor;
             accentBar.color = d.accentColor;
-            closeButton.gameObject.SetActive(true);
 
             string body = t != null
-                ? $"<b>{t.title}</b>\n{t.description}\n<color=#9AA3B2>{(d.status == AgentStatus.Working ? $"Progress {Mathf.RoundToInt(t.progress * 100f)}%" : d.ActivityLabel)}</color>"
+                ? $"<b>{t.title}</b>\n{TaskLibrary.Trim(t.description, 140)}\n<color=#9AA3B2>{(d.status == AgentStatus.Working ? $"Progress {Mathf.RoundToInt(t.progress * 100f)}%" : d.ActivityLabel)}</color>"
                 : $"<color=#9AA3B2>{(d.activity == AgentActivity.InMeeting ? "In group discussion." : "Idle and ready for a task.")}</color>";
-            bodyText.text = body + $"\n\n<color=#9AA3B2>Tasks completed: {d.completedTasks}</color>";
+            if (agent.BacklogCount > 0) body += $"\n<color=#4FD1C5>{agent.BacklogCount} more task(s) queued</color>";
+            bodyText.text = body + $"\n<color=#9AA3B2>Tasks completed: {d.completedTasks}</color>";
 
-            assignButton.interactable = agent.CanTakeTask;
-            assignLabel.text = agent.CanTakeTask ? "ASSIGN TASK" : "BUSY";
+            bool idle = t == null && agent.BacklogCount == 0;
+            assignLabel.text = idle ? "ASSIGN TASK" : "QUEUE TASK";
+            nextButton.gameObject.SetActive(d.activity == AgentActivity.InQueue && d.queuePosition > 0);
         }
 
         private void Update()

@@ -170,7 +170,6 @@ namespace AIManagerWorkspace
             canvas.renderMode = RenderMode.WorldSpace;
             go.AddComponent<CanvasScaler>().dynamicPixelsPerUnit = 3f;
             go.AddComponent<GraphicRaycaster>();
-            go.AddComponent<UnityEngine.XR.Interaction.Toolkit.UI.TrackedDeviceGraphicRaycaster>();
             var rt = (RectTransform)go.transform;
             rt.sizeDelta = size;
             rt.localPosition = localPos;
@@ -226,7 +225,7 @@ namespace AIManagerWorkspace
             t.color = color;
             t.alignment = align;
             t.textWrappingMode = TextWrappingModes.Normal;
-            t.overflowMode = TextOverflowModes.Ellipsis;
+            t.overflowMode = TextOverflowModes.Truncate;
             t.raycastTarget = false;
             if (bold) t.fontStyle = FontStyles.Bold;
             return t;

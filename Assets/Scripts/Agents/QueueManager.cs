@@ -25,6 +25,23 @@ namespace AIManagerWorkspace
         public bool IsPresenterReady { get; private set; }
         public IReadOnlyList<AgentController> Waiting => waiting;
         public ReviewDesk Desk => reviewDesk;
+        /// <summary>
+        /// "Hold the queue": agents still line up, but nobody rides the lift until it is released,
+        /// so the manager can think, talk or read without the next request arriving.
+        /// </summary>
+        public bool Hold
+        {
+            get => hold;
+            set
+            {
+                if (hold == value) return;
+                hold = value;
+                Changed?.Invoke();
+                if (!hold) TryAdvance();
+            }
+        }
+        private bool hold;
+
         public int PendingCount => waiting.Count + (Presenter != null ? 1 : 0);
 
         public Quaternion LineFacing => Quaternion.LookRotation(-queueStart.forward);
@@ -51,9 +68,20 @@ namespace AIManagerWorkspace
             TryAdvance();
         }
 
+        /// <summary>Moves a waiting agent to the front of the line ("review next").</summary>
+        public void PromoteToFront(AgentController agent)
+        {
+            int i = waiting.IndexOf(agent);
+            if (i <= 0) return;
+            waiting.RemoveAt(i);
+            waiting.Insert(0, agent);
+            RefreshPositions();
+            Changed?.Invoke();
+        }
+
         private void TryAdvance()
         {
-            if (Presenter != null || waiting.Count == 0) return;
+            if (hold || Presenter != null || waiting.Count == 0) return;
 
             Presenter = waiting[0];
             waiting.RemoveAt(0);

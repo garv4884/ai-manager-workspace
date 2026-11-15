@@ -1,15 +1,25 @@
 using System;
+using System.Collections.Generic;
 
 namespace AIManagerWorkspace
 {
-    /// <summary>
-    /// Hint for how the first pass of a task ends. The live AI may still decide to ask
-    /// a question; offline simulation follows the hint.
-    /// </summary>
+    /// <summary>Hint for how the first pass of a task ends (offline simulation follows it; live AI decides).</summary>
     public enum TaskType
     {
         NeedsApproval,
-        NeedsTextInput
+        NeedsTextInput,
+        NeedsChoice
+    }
+
+    /// <summary>What an agent brings to the manager. Each kind offers its own set of actions.</summary>
+    public enum RequestKind
+    {
+        None,
+        Approval,   // plan or deliverable: approve / request changes / reject
+        Question,   // open question: answer / let the agent decide / drop task
+        Choice,     // pick one of the agent's options / something else / drop task
+        Error,      // agent is blocked: retry / drop task
+        Report      // FYI wrap-up: acknowledge / follow up
     }
 
     public enum TaskExecutionStatus
@@ -22,6 +32,17 @@ namespace AIManagerWorkspace
         Failed
     }
 
+    /// <summary>One line of a team plan: which agent does what.</summary>
+    [Serializable]
+    public class PlannedTask
+    {
+        public string agent;
+        public string role;
+        public string title;
+        public string task;
+        public string needs;     // "approval" | "question" | "choice"
+    }
+
     [Serializable]
     public class TaskData
     {
@@ -32,22 +53,38 @@ namespace AIManagerWorkspace
         public TaskExecutionStatus status = TaskExecutionStatus.Pending;
         public float progress;
 
-        /// <summary>The question the agent asked (when waiting for input).</summary>
+        /// <summary>The request currently waiting on the manager.</summary>
+        public RequestKind request = RequestKind.None;
+        /// <summary>Question text (Question / Choice).</summary>
         public string question = "";
-        /// <summary>The manager's answer to <see cref="question"/>.</summary>
+        /// <summary>Options offered with a Choice request.</summary>
+        public List<string> options = new List<string>();
+        /// <summary>The manager's answer or chosen option.</summary>
         public string answer = "";
         /// <summary>Feedback from the latest "request changes".</summary>
         public string feedback = "";
-        /// <summary>The deliverable / plan shown on the page.</summary>
+        /// <summary>Plan / deliverable / report text.</summary>
         public string output = "";
         public string error = "";
         public int revision = 1;
+        public bool askedOnce;
+
+        /// <summary>Team brief this task belongs to (null for standalone tasks).</summary>
+        public string planId;
+        /// <summary>True for the lead's "split the goal into roles" task.</summary>
+        public bool isTeamPlan;
+        /// <summary>True for the lead's final wrap-up report.</summary>
+        public bool isWrapUp;
+        public List<PlannedTask> plan = new List<PlannedTask>();
 
         /// <summary>Offline-simulation content, filled from the task library.</summary>
         public TaskLibrary.Template template;
 
         public DateTime createdAt = DateTime.UtcNow;
         public DateTime completedAt;
+
+        /// <summary>For JSON loading (session save files).</summary>
+        public TaskData() { }
 
         public TaskData(string title, string description, TaskType type)
         {
@@ -56,7 +93,5 @@ namespace AIManagerWorkspace
             this.description = description;
             this.type = type;
         }
-
-        public bool HasAskedQuestion => !string.IsNullOrEmpty(question);
     }
 }

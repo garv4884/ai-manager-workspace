@@ -1,5 +1,8 @@
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
+using Oculus.Interaction;
+using Oculus.Interaction.Surfaces;
 using TMPro;
 using Unity.AI.Navigation;
 using UnityEditor;
@@ -15,30 +18,38 @@ using static AIManagerWorkspace.BuilderKit;
 namespace AIManagerWorkspace
 {
     /// <summary>
-    /// Builds the whole AI Manager Workspace scene from code.
+    /// Builds the whole AI Manager Workspace scene from code, on top of Meta XR building blocks.
     ///
     /// Layout (metres, +Z is "in front of the manager"):
-    ///   - Manager platform: round, 1.45 m high, centred at the origin, stairs at the back.
+    ///   - Manager platform: round, 0.9 m high, centred at the origin, stairs at the back.
     ///   - Review desk on the platform's front edge; lift just beyond it at z = 2.95.
     ///   - Queue lane from z = 4.2 outward along +Z.
     ///   - Workstations around the platform (layout templates are relative to the origin).
     ///   - Room 24 x 23.5 m: daylight windows (west), oak slat wall (east), team board (north),
     ///     glass discussion room (south-east corner), lounge (south-west corner).
+    ///
+    /// XR: Meta "Interactions Rig" building block (OVRCameraRig + hands + controllers with ray,
+    /// poke, grab and locomotion), "Passthrough" building block, Interaction SDK quick actions for
+    /// ray + poke on every desk canvas and NavMesh teleport.
     /// </summary>
     public static class SceneBuilder
     {
         private const string ScenePath = "Assets/Scenes/AIManagerWorkspace.unity";
-        private const float PlatformHeight = 1.45f;
+        private const float PlatformHeight = 0.9f;
         private const float PlatformRadius = 2.3f;
-        private const float DeskTopY = PlatformHeight + 0.85f;
+        private const float DeskHeight = 0.78f;
+        private const float DeskTopY = PlatformHeight + DeskHeight;
         private static readonly Vector3 LiftCenter = new Vector3(0f, 0f, 2.95f);
         private static readonly Vector3 QueueStart = new Vector3(0f, 0f, 4.2f);
         private static readonly Vector3 ManagerStand = new Vector3(0f, PlatformHeight, 0.5f);
         private const int WorkstationCount = 6;
 
         [MenuItem("Tools/AI Manager/Build Main Scene")]
-        public static void BuildMainScene()
+        public static async void BuildMainSceneMenu() => await BuildMainScene();
+
+        public static async Task BuildMainScene()
         {
+            MetaSetup.ConfigureProject();
             SetNavAgentRadius(0.28f);
             AgentPrefabSetup.CreateAgentPrefab();
             var agentPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(AgentPrefabSetup.PrefabPath);
@@ -67,23 +78,23 @@ namespace AIManagerWorkspace
             MarkStatic(meetingWalls.gameObject);
 
             // NavMesh: bake walkable floor; desks are excluded and carve at runtime instead.
-            var nav = new GameObject("NavMesh").AddComponent<NavMeshSurface>();
+            var nav = new GameObject("NavMesh").AddComponent<Unity.AI.Navigation.NavMeshSurface>();
             nav.transform.SetParent(systems);
             nav.collectObjects = CollectObjects.All;
             nav.useGeometry = NavMeshCollectGeometry.PhysicsColliders;
             nav.BuildNavMesh();
 
-            // ── XR rig ──────────────────────────────────────────────────────
-            var rigPrefab = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/VRTemplateAssets/Prefabs/Setup/Complete XR Origin Set Up Hands Variant.prefab");
-            var rig = (GameObject)PrefabUtility.InstantiatePrefab(rigPrefab);
-            rig.name = "XR Origin (Manager)";
-            rig.transform.SetPositionAndRotation(ManagerStand, Quaternion.identity);
-            Camera xrCam = rig.GetComponentInChildren<Camera>(true);
-            if (Object.FindAnyObjectByType<EventSystem>() == null)
-            {
-                var es = new GameObject("EventSystem", typeof(EventSystem), typeof(UnityEngine.XR.Interaction.Toolkit.UI.XRUIInputModule));
-                es.transform.SetParent(systems);
-            }
+            // ── Meta building blocks ────────────────────────────────────────
+            var es = new GameObject("EventSystem", typeof(EventSystem), typeof(PointableCanvasModule));
+            es.transform.SetParent(systems);
+            await MetaSetup.InstallBlock(MetaSetup.InteractionsRigBlock);   // Camera Rig + hands/controllers interactions
+            await MetaSetup.InstallBlock(MetaSetup.PassthroughBlock);
+            var cameraRig = Object.FindAnyObjectByType<OVRCameraRig>();
+            cameraRig.transform.SetPositionAndRotation(ManagerStand, Quaternion.identity);
+            var ovrManager = cameraRig.GetComponent<OVRManager>();
+            if (ovrManager != null) ovrManager.isInsightPassthroughEnabled = true;
+            var ptLayer = Object.FindAnyObjectByType<OVRPassthroughLayer>();
+            if (ptLayer != null) { ptLayer.hidden = true; ptLayer.enabled = false; }
 
             // ── Systems ─────────────────────────────────────────────────────
             var gmGO = new GameObject("GameManager");
@@ -91,26 +102,72 @@ namespace AIManagerWorkspace
             var gm = gmGO.AddComponent<GameManager>();
             var ai = gmGO.AddComponent<AIServiceManager>();
             var dispatcher = gmGO.AddComponent<TaskDispatcher>();
+            var planner = gmGO.AddComponent<TeamPlanner>();
             var agents = gmGO.AddComponent<AgentManager>();
             var queue = gmGO.AddComponent<QueueManager>();
             var layout = gmGO.AddComponent<WorkspaceLayoutManager>();
             var passthrough = gmGO.AddComponent<PassthroughToggle>();
             var recognizer = gmGO.AddComponent<HandGestureRecognizer>();
             var gestures = gmGO.AddComponent<GestureInteractionManager>();
+            var textInput = gmGO.AddComponent<TextInputService>();
+            var station = gmGO.AddComponent<ManagerStation>();
+            var session = gmGO.AddComponent<SessionStore>();
 
             var reviewDesk = deskParts.desk;
-            var keyboard = BuildKeyboard(platform, reviewDesk);
-            var console = BuildConsole(platform, recognizer);
-            BuildLayoutPanel(platform, passthrough);
-            BuildDetailPanel(platform);
+            var deskRoot = deskParts.root;
+            var keyboard = BuildKeyboard(deskRoot, reviewDesk, textInput);
+            var canvases = new List<Canvas>
+            {
+                keyboard.GetComponentInChildren<Canvas>(true),
+                BuildConsole(deskRoot, recognizer),
+                BuildLayoutPanel(deskRoot, passthrough),
+                BuildDetailPanel(deskRoot),
+            };
+            var handMenu = BuildHandMenu(passthrough);
+
+            // Done tray: point and pinch to open the work history on the workspace panel.
+            var settingsUI = Object.FindAnyObjectByType<SettingsPanelUI>(FindObjectsInactive.Include);
+            var trayHit = new GameObject("TrayClick");
+            trayHit.transform.SetParent(deskParts.tray.transform, false);
+            var trayCol = trayHit.AddComponent<BoxCollider>();
+            trayCol.size = new Vector3(1.1f, 6f, 1.1f);           // tray is thin; a taller box is easier to hit
+            trayCol.center = new Vector3(0f, 2.5f, 0f);
+            AddRayTarget(trayHit, trayCol);
+            var trayClick = trayHit.AddComponent<RayClickTarget>();
+            Wire(trayClick, "highlight", deskParts.tray.transform);
+            UnityEditor.Events.UnityEventTools.AddPersistentListener(trayClick.OnClick, settingsUI.ShowHistory);
             BuildTeamBoard(shell.parent);
+
+            // Ray + poke on every interactive canvas (Interaction SDK quick actions).
+            foreach (var c in canvases.Append(handMenu))
+            {
+                bool wasActive = c.gameObject.activeSelf;
+                c.gameObject.SetActive(true);
+                MetaSetup.RunWizard("Oculus.Interaction.Editor.QuickActions.RayCanvasWizard", c.gameObject);
+                MetaSetup.RunWizard("Oculus.Interaction.Editor.QuickActions.PokeCanvasWizard", c.gameObject);
+                c.gameObject.SetActive(wasActive);
+            }
+
+            // Teleport anywhere walkable (floor, platform, stairs) with hands or controllers.
+            var teleport = new GameObject("TeleportArea");
+            teleport.transform.SetParent(systems);
+            MetaSetup.RunWizard("Oculus.Interaction.Editor.QuickActions.TeleportWizard", teleport,
+                ("_interactableType", 2));   // NavMesh
 
             Wire(gm, "agentManager", agents);
             Wire(gm, "queueManager", queue);
             Wire(gm, "aiService", ai);
             Wire(gm, "dispatcher", dispatcher);
+            Wire(gm, "planner", planner);
             Wire(gm, "layoutManager", layout);
-            Wire(gm, "keyboard", keyboard);
+            Wire(gm, "keyboard", textInput);
+            Wire(gm, "station", station);
+            Wire(gm, "session", session);
+            Wire(textInput, "deskKeyboard", keyboard);
+
+            Wire(station, "deskAssembly", deskRoot);
+            Wire(station, "standPoint", Empty("StandPoint", platform, ManagerStand - platform.position).transform);
+            Wire(station, "rigRoot", cameraRig.transform);
 
             Wire(agents, "agentPrefab", agentPrefab);
             WireArray(agents, "workstations", workstations.Cast<Object>().ToArray());
@@ -124,7 +181,6 @@ namespace AIManagerWorkspace
             Wire(layout, "center", platform);
 
             WireArray(passthrough, "hideInMixedReality", new Object[] { shell.gameObject, decor.gameObject, meetingWalls.gameObject });
-            Wire(passthrough, "xrCamera", xrCam);
             Wire(gestures, "recognizer", recognizer);
 
             // ── Save ────────────────────────────────────────────────────────
@@ -136,6 +192,18 @@ namespace AIManagerWorkspace
             EditorBuildSettings.scenes = scenes.ToArray();
             AssetDatabase.SaveAssets();
             Debug.Log("[SceneBuilder] AI Manager Workspace scene built and saved.");
+        }
+
+        /// <summary>Makes a collider pointable by the Interaction SDK hand/controller rays.</summary>
+        public static RayInteractable AddRayTarget(GameObject go, Collider collider)
+        {
+            var surface = go.AddComponent<ColliderSurface>();
+            surface.InjectAllColliderSurface(collider);
+            var ray = go.AddComponent<RayInteractable>();
+            ray.InjectAllRayInteractable(surface);
+            EditorUtility.SetDirty(surface);
+            EditorUtility.SetDirty(ray);
+            return ray;
         }
 
         // ══ Room shell ═══════════════════════════════════════════════════════
@@ -153,7 +221,6 @@ namespace AIManagerWorkspace
             Material rugSoft = Mat("Env_RugSoft", Palette.RugSoft, 0.05f);
 
             var floorGO = Box("Floor", shell, new Vector3(0f, -0.05f, 2.75f), new Vector3(24.4f, 0.1f, 23.9f), floor);
-            floorGO.AddComponent<UnityEngine.XR.Interaction.Toolkit.Locomotion.Teleportation.TeleportationArea>();
             Box("WorkRug", shell, new Vector3(0f, 0.006f, 7.6f), new Vector3(18f, 0.012f, 9f), rug, false);
             Cyl("PlatformRug", shell, new Vector3(0f, 0.011f, 0f), 7.6f, 0.022f, rugSoft, false);
 
@@ -249,7 +316,7 @@ namespace AIManagerWorkspace
 
         // ══ Manager platform & review desk ═══════════════════════════════════
 
-        private struct DeskParts { public ReviewDesk desk; }
+        private struct DeskParts { public ReviewDesk desk; public Transform root; public GameObject tray; }
 
         private static DeskParts BuildPlatform(Transform platform)
         {
@@ -263,26 +330,25 @@ namespace AIManagerWorkspace
 
             Cyl("Base", platform, new Vector3(0f, PlatformHeight * 0.5f, 0f), PlatformRadius, PlatformHeight, plinth);
             Cyl("Kick", platform, new Vector3(0f, 0.05f, 0f), PlatformRadius + 0.12f, 0.1f, plinth, false);
-            var deck = Cyl("Deck", platform, new Vector3(0f, PlatformHeight - 0.02f, 0f), PlatformRadius, 0.04f, top);
-            deck.AddComponent<UnityEngine.XR.Interaction.Toolkit.Locomotion.Teleportation.TeleportationArea>();
+            Cyl("Deck", platform, new Vector3(0f, PlatformHeight - 0.02f, 0f), PlatformRadius, 0.04f, top);
             Cyl("EdgeGlow", platform, new Vector3(0f, PlatformHeight - 0.07f, 0f), PlatformRadius + 0.02f, 0.03f, glow, false);
 
-            // Glass balustrade with an oak handrail; open at the front (desk) and back (stairs).
+            // Low glass balustrade with an oak handrail, open at the front so nothing blocks the view down.
             const int segments = 20;
             for (int i = 0; i < segments; i++)
             {
                 float deg = i * 360f / segments + 9f;
-                if (deg < 60f || deg > 300f) continue;          // front: the desk
+                if (deg < 70f || deg > 290f) continue;          // front: the desk and the view of the team
                 if (deg > 162f && deg < 198f) continue;          // back: stairs
                 float a = deg * Mathf.Deg2Rad;
                 Vector3 p = new Vector3(Mathf.Sin(a), 0f, Mathf.Cos(a)) * (PlatformRadius - 0.06f);
                 float width = 2f * Mathf.PI * PlatformRadius / segments;
-                Box($"Glass_{i}", platform, p + Vector3.up * (PlatformHeight + 0.48f), new Vector3(width, 0.9f, 0.02f), glass, true, new Vector3(0f, deg, 0f));
-                Box($"Rail_{i}", platform, p + Vector3.up * (PlatformHeight + 0.95f), new Vector3(width + 0.02f, 0.045f, 0.07f), oak, false, new Vector3(0f, deg, 0f));
+                Box($"Glass_{i}", platform, p + Vector3.up * (PlatformHeight + 0.4f), new Vector3(width, 0.75f, 0.02f), glass, true, new Vector3(0f, deg, 0f));
+                Box($"Rail_{i}", platform, p + Vector3.up * (PlatformHeight + 0.8f), new Vector3(width + 0.02f, 0.04f, 0.06f), oak, false, new Vector3(0f, deg, 0f));
             }
 
             // Stairs down the back.
-            const int steps = 8;
+            const int steps = 5;
             float rise = PlatformHeight / steps;
             for (int i = 0; i < steps; i++)
             {
@@ -292,27 +358,27 @@ namespace AIManagerWorkspace
                 Box($"Step_{i}", platform, new Vector3(0f, h * 0.5f, z), new Vector3(1.3f, h, 0.3f), i % 2 == 0 ? walnut : top);
             }
 
-            // Review desk: centre slab plus two angled wings.
-            var deskRoot = Empty("ReviewDesk", platform, Vector3.zero).transform;
-            Box("DeskTop", deskRoot, new Vector3(0f, DeskTopY - 0.025f, 1.35f), new Vector3(1.4f, 0.05f, 0.66f), walnut);
-            Box("DeskPedestal", deskRoot, new Vector3(0f, PlatformHeight + 0.41f, 1.45f), new Vector3(1.3f, 0.82f, 0.4f), plinth);
-            Box("DeskFrontGlow", deskRoot, new Vector3(0f, DeskTopY - 0.05f, 1.69f), new Vector3(1.38f, 0.02f, 0.02f), glow, false);
+            // Review desk: a slim slab on one narrow column so the view of the floor stays open.
+            // Everything on the desk lives under DeskAssembly, which "Fit desk to me" moves up and down.
+            var deskRoot = Empty("DeskAssembly", platform, Vector3.zero).transform;
+            Box("DeskTop", deskRoot, new Vector3(0f, DeskTopY - 0.02f, 1.3f), new Vector3(1.4f, 0.04f, 0.62f), walnut);
+            Box("DeskColumn", deskRoot, new Vector3(0f, DeskTopY - 0.6f, 1.25f), new Vector3(0.36f, 1.15f, 0.22f), plinth, false);
+            Box("DeskFrontGlow", deskRoot, new Vector3(0f, DeskTopY - 0.035f, 1.61f), new Vector3(1.38f, 0.015f, 0.015f), glow, false);
             foreach (int side in new[] { -1, 1 })
             {
                 float yaw = 35f * side;
-                Vector3 wingPos = new Vector3(side * (0.7f + 0.42f * Mathf.Cos(35f * Mathf.Deg2Rad)), DeskTopY - 0.025f,
-                    1.35f - 0.42f * Mathf.Sin(35f * Mathf.Deg2Rad));
-                Box(side < 0 ? "WingLeft" : "WingRight", deskRoot, wingPos, new Vector3(0.86f, 0.05f, 0.6f), walnut, true, new Vector3(0f, yaw, 0f));
-                Box(side < 0 ? "WingLeftLeg" : "WingRightLeg", deskRoot, new Vector3(wingPos.x, PlatformHeight + 0.41f, wingPos.z), new Vector3(0.6f, 0.82f, 0.3f), plinth, true, new Vector3(0f, yaw, 0f));
+                Vector3 wingPos = new Vector3(side * (0.7f + 0.38f * Mathf.Cos(35f * Mathf.Deg2Rad)), DeskTopY - 0.02f,
+                    1.3f - 0.38f * Mathf.Sin(35f * Mathf.Deg2Rad));
+                Box(side < 0 ? "WingLeft" : "WingRight", deskRoot, wingPos, new Vector3(0.78f, 0.04f, 0.56f), walnut, true, new Vector3(0f, yaw, 0f));
             }
 
             // Done tray (approved pages stack up here).
-            var tray = Box("DoneTray", deskRoot, new Vector3(0.5f, DeskTopY + 0.01f, 1.5f), new Vector3(0.28f, 0.02f, 0.36f), plinth, false);
-            var stackRoot = Empty("DoneStackRoot", deskRoot, new Vector3(0.5f, DeskTopY + 0.02f, 1.5f)).transform;
+            var tray = Box("DoneTray", deskRoot, new Vector3(0.5f, DeskTopY + 0.01f, 1.45f), new Vector3(0.28f, 0.02f, 0.34f), plinth, false);
+            var stackRoot = Empty("DoneStackRoot", deskRoot, new Vector3(0.5f, DeskTopY + 0.02f, 1.45f)).transform;
             var stack = Box("DoneStack", stackRoot, new Vector3(0f, 0.001f, 0f), new Vector3(0.22f, 0.002f, 0.3f), paper, false);
 
-            var reviewAnchor = Empty("ReviewAnchor", deskRoot, new Vector3(0f, DeskTopY + 0.5f, 1.52f), new Vector3(14f, 0f, 0f));
-            var trayAnchor = Empty("TrayAnchor", deskRoot, new Vector3(0.5f, DeskTopY + 0.03f, 1.5f));
+            var reviewAnchor = Empty("ReviewAnchor", deskRoot, new Vector3(0f, DeskTopY + 0.53f, 1.47f), new Vector3(16f, 0f, 0f));
+            var trayAnchor = Empty("TrayAnchor", deskRoot, new Vector3(0.5f, DeskTopY + 0.03f, 1.45f));
 
             var desk = deskRoot.gameObject.AddComponent<ReviewDesk>();
             Wire(desk, "reviewAnchor", reviewAnchor.transform);
@@ -329,7 +395,7 @@ namespace AIManagerWorkspace
             key.color = new Color(1f, 0.92f, 0.82f);
             key.shadows = LightShadows.None;
 
-            return new DeskParts { desk = desk };
+            return new DeskParts { desk = desk, root = deskRoot, tray = tray };
         }
 
         private static LiftPad BuildLift()
@@ -433,6 +499,10 @@ namespace AIManagerWorkspace
                 obstacle.carving = true;
                 root.gameObject.AddComponent<NavMeshModifier>().ignoreFromBuild = true;
 
+                var hit = root.gameObject.AddComponent<BoxCollider>();
+                hit.center = new Vector3(0f, 0.55f, -0.1f);
+                hit.size = new Vector3(1.45f, 1.1f, 1.2f);
+                AddRayTarget(root.gameObject, hit);
                 var drag = root.gameObject.AddComponent<FloorDragInteractable>();
                 Wire(drag, "workstation", ws);
                 list.Add(ws);
@@ -513,9 +583,9 @@ namespace AIManagerWorkspace
 
         // ══ Desk UI ══════════════════════════════════════════════════════════
 
-        private static VirtualKeyboardManager BuildKeyboard(Transform platform, ReviewDesk desk)
+        private static VirtualKeyboardManager BuildKeyboard(Transform deskRoot, ReviewDesk desk, TextInputService service)
         {
-            var root = Empty("SurfaceKeyboard", platform, new Vector3(0f, DeskTopY + 0.07f, 1.18f), new Vector3(68f, 0f, 0f)).transform;
+            var root = Empty("SurfaceKeyboard", deskRoot, new Vector3(0f, DeskTopY + 0.07f, 1.13f), new Vector3(68f, 0f, 0f)).transform;
             var canvas = WorldCanvas("KeyboardCanvas", root, Vector3.zero, Vector3.zero, new Vector2(680f, 420f), 0.001f);
             Transform t = canvas.transform;
             Panel("Backplate", t, Vector2.zero, new Vector2(680f, 420f), new Color(0.07f, 0.08f, 0.1f, 0.96f));
@@ -523,27 +593,32 @@ namespace AIManagerWorkspace
             prompt.enableAutoSizing = true; prompt.fontSizeMin = 13f; prompt.fontSizeMax = 19f;
             Panel("InputBox", t, new Vector2(0f, 140f), new Vector2(640f, 52f), new Color(0.15f, 0.17f, 0.21f));
             var input = Text("Input", t, "", 22f, Palette.UiText, new Vector2(0f, 140f), new Vector2(620f, 48f), TextAlignmentOptions.Left);
-            input.overflowMode = TextOverflowModes.Ellipsis;
+
+            var keysRoot = new GameObject("Keys", typeof(RectTransform)).transform;
+            keysRoot.SetParent(t, false);
+            var useDesk = Button("UseDeskKeyboard", t, "TYPE ON THE DESK INSTEAD", new Vector2(0f, 40f), new Vector2(420f, 60f), new Color(0.25f, 0.28f, 0.34f), out _, 18f);
 
             var kb = root.gameObject.AddComponent<VirtualKeyboardManager>();
             var keys = new List<Object>();
-
             string[] rows = { "1234567890", "qwertyuiop", "asdfghjkl'", "zxcvbnm,.?" };
             for (int r = 0; r < rows.Length; r++)
                 for (int c = 0; c < rows[r].Length; c++)
                 {
                     string ch = rows[r][c].ToString();
-                    keys.Add(Key(t, ch, ch, new Vector2(-283f + c * 63f + (r == 2 ? 10f : 0f), 76f - r * 56f), new Vector2(57f, 50f),
+                    keys.Add(Key(keysRoot, ch, ch, new Vector2(-283f + c * 63f + (r == 2 ? 10f : 0f), 76f - r * 56f), new Vector2(57f, 50f),
                         VirtualKeyboardButton.ActionType.Character, Palette.UiButton));
                 }
             float y = 76f - 4 * 56f;
-            keys.Add(Key(t, "SHIFT", "", new Vector2(-262f, y), new Vector2(100f, 50f), VirtualKeyboardButton.ActionType.Shift, new Color(0.25f, 0.28f, 0.34f)));
-            keys.Add(Key(t, "SPACE", "", new Vector2(-62f, y), new Vector2(286f, 50f), VirtualKeyboardButton.ActionType.Space, Palette.UiButton));
-            keys.Add(Key(t, "DEL", "", new Vector2(128f, y), new Vector2(80f, 50f), VirtualKeyboardButton.ActionType.Backspace, new Color(0.25f, 0.28f, 0.34f)));
-            keys.Add(Key(t, "ESC", "", new Vector2(214f, y), new Vector2(76f, 50f), VirtualKeyboardButton.ActionType.Cancel, new Color(0.45f, 0.22f, 0.22f)));
-            keys.Add(Key(t, "SEND", "", new Vector2(296f, y), new Vector2(76f, 50f), VirtualKeyboardButton.ActionType.Submit, new Color(0.16f, 0.55f, 0.48f)));
+            keys.Add(Key(keysRoot, "SHIFT", "", new Vector2(-262f, y), new Vector2(100f, 50f), VirtualKeyboardButton.ActionType.Shift, new Color(0.25f, 0.28f, 0.34f)));
+            keys.Add(Key(keysRoot, "SPACE", "", new Vector2(-62f, y), new Vector2(286f, 50f), VirtualKeyboardButton.ActionType.Space, Palette.UiButton));
+            keys.Add(Key(keysRoot, "DEL", "", new Vector2(128f, y), new Vector2(80f, 50f), VirtualKeyboardButton.ActionType.Backspace, new Color(0.25f, 0.28f, 0.34f)));
+            keys.Add(Key(keysRoot, "ESC", "", new Vector2(214f, y), new Vector2(76f, 50f), VirtualKeyboardButton.ActionType.Cancel, new Color(0.45f, 0.22f, 0.22f)));
+            keys.Add(Key(keysRoot, "SEND", "", new Vector2(296f, y), new Vector2(76f, 50f), VirtualKeyboardButton.ActionType.Submit, new Color(0.16f, 0.55f, 0.48f)));
 
             Wire(kb, "visualRoot", canvas.gameObject);
+            Wire(kb, "keysRoot", keysRoot.gameObject);
+            Wire(kb, "useDeskButton", useDesk);
+            Wire(kb, "service", service);
             Wire(kb, "promptText", prompt);
             Wire(kb, "inputText", input);
             Wire(kb, "desk", desk);
@@ -564,18 +639,23 @@ namespace AIManagerWorkspace
             return key;
         }
 
-        private static ManagerConsoleUI BuildConsole(Transform platform, HandGestureRecognizer recognizer)
+        private static Canvas BuildConsole(Transform deskRoot, HandGestureRecognizer recognizer)
         {
-            var canvas = WorldCanvas("ReviewConsole", platform, new Vector3(0f, DeskTopY + 0.075f, 1.62f), new Vector3(28f, 0f, 0f), new Vector2(640f, 170f), 0.001f);
+            var canvas = WorldCanvas("ReviewConsole", deskRoot, new Vector3(0f, DeskTopY + 0.075f, 1.56f), new Vector3(28f, 0f, 0f), new Vector2(640f, 170f), 0.001f);
             Transform t = canvas.transform;
             Panel("Background", t, Vector2.zero, new Vector2(640f, 170f), Palette.UiPanel);
             var headline = Text("Headline", t, "All clear", 26f, Palette.UiText, new Vector2(-90f, 56f), new Vector2(440f, 40f), TextAlignmentOptions.Left, true);
             var subline = Text("Subline", t, "", 18f, Palette.UiMuted, new Vector2(200f, 56f), new Vector2(220f, 40f), TextAlignmentOptions.Right);
 
-            var approve = Button("Approve", t, "APPROVE", new Vector2(-232f, -4f), new Vector2(146f, 60f), new Color(0.18f, 0.6f, 0.38f), out var approveLabel);
-            var changes = Button("Changes", t, "CHANGES", new Vector2(-78f, -4f), new Vector2(146f, 60f), new Color(0.78f, 0.5f, 0.16f), out _);
-            var answer = Button("Answer", t, "ANSWER", new Vector2(78f, -4f), new Vector2(146f, 60f), new Color(0.7f, 0.6f, 0.12f), out _);
-            var dismiss = Button("Dismiss", t, "DISMISS", new Vector2(232f, -4f), new Vector2(146f, 60f), new Color(0.42f, 0.25f, 0.27f), out _);
+            var buttons = new List<Object>();
+            var labels = new List<Object>();
+            for (int i = 0; i < 5; i++)
+            {
+                var b = Button($"Action_{i}", t, "ACTION", new Vector2(-240f + i * 120f, -4f), new Vector2(112f, 60f), Palette.UiButton, out var label, 18f);
+                label.enableAutoSizing = true; label.fontSizeMin = 12f; label.fontSizeMax = 19f;
+                buttons.Add(b);
+                labels.Add(label);
+            }
 
             Panel("GestureTrack", t, new Vector2(0f, -58f), new Vector2(600f, 10f), new Color(0.2f, 0.22f, 0.26f));
             var fill = Panel("GestureFill", t, new Vector2(0f, -58f), new Vector2(600f, 10f), Palette.Teal, false);
@@ -587,44 +667,82 @@ namespace AIManagerWorkspace
             var ui = canvas.gameObject.AddComponent<ManagerConsoleUI>();
             Wire(ui, "headline", headline);
             Wire(ui, "subline", subline);
-            Wire(ui, "approveButton", approve);
-            Wire(ui, "approveLabel", approveLabel);
-            Wire(ui, "changesButton", changes);
-            Wire(ui, "answerButton", answer);
-            Wire(ui, "dismissButton", dismiss);
+            WireArray(ui, "actionButtons", buttons.ToArray());
+            WireArray(ui, "actionLabels", labels.ToArray());
             Wire(ui, "gestureFill", fill);
             Wire(ui, "gestureLabel", gestureLabel);
             Wire(ui, "gestures", recognizer);
-            return ui;
+            return canvas;
         }
 
-        private static void BuildLayoutPanel(Transform platform, PassthroughToggle passthrough)
+        private static Canvas BuildLayoutPanel(Transform deskRoot, PassthroughToggle passthrough)
         {
-            var canvas = WorldCanvas("WorkspacePanel", platform, new Vector3(-0.86f, DeskTopY + 0.27f, 1.08f), new Vector3(24f, -46f, 0f), new Vector2(480f, 470f), 0.001f);
-            Transform t = canvas.transform;
-            Panel("Background", t, Vector2.zero, new Vector2(480f, 470f), Palette.UiPanel);
-            Text("Title", t, "WORKSPACE", 22f, Palette.Teal, new Vector2(0f, 205f), new Vector2(440f, 32f), TextAlignmentOptions.Left, true).characterSpacing = 6f;
-            var current = Text("Current", t, "Layout: Classroom", 22f, Palette.UiText, new Vector2(0f, 172f), new Vector2(440f, 32f));
+            var canvas = WorldCanvas("WorkspacePanel", deskRoot, new Vector3(-0.86f, DeskTopY + 0.3f, 1.06f), new Vector3(24f, -46f, 0f), new Vector2(480f, 560f), 0.001f);
+            Panel("Background", canvas.transform, Vector2.zero, new Vector2(480f, 560f), Palette.UiPanel);
+            Transform t = View("MainView", canvas.transform);
+            Text("Title", t, "WORKSPACE", 22f, Palette.Teal, new Vector2(0f, 250f), new Vector2(440f, 32f), TextAlignmentOptions.Left, true).characterSpacing = 6f;
+            var current = Text("Current", t, "Layout: Classroom", 21f, Palette.UiText, new Vector2(0f, 217f), new Vector2(440f, 32f));
+
+            var brief = Button("Brief", t, "BRIEF THE TEAM", new Vector2(0f, 158f), new Vector2(440f, 64f), new Color(0.16f, 0.55f, 0.48f), out _, 24f);
 
             var buttons = new List<Object>();
             var highlights = new List<Object>();
             for (int i = 0; i < 6; i++)
             {
                 int col = i % 2, row = i / 2;
-                var b = Button($"Layout_{i}", t, WorkspaceLayout.DisplayName((LayoutType)i), new Vector2(col == 0 ? -113f : 113f, 112f - row * 70f),
-                    new Vector2(214f, 60f), Palette.UiButton, out _);
+                var b = Button($"Layout_{i}", t, WorkspaceLayout.DisplayName((LayoutType)i), new Vector2(col == 0 ? -113f : 113f, 82f - row * 64f),
+                    new Vector2(214f, 56f), Palette.UiButton, out _);
                 buttons.Add(b);
                 highlights.Add(b.targetGraphic);
             }
 
-            var meeting = Button("Meeting", t, "GROUP DISCUSSION", new Vector2(0f, -110f), new Vector2(440f, 54f), new Color(0.32f, 0.36f, 0.55f), out var meetingLabel);
-            var auto = Button("AutoTasks", t, "AUTO TASKS: ON", new Vector2(0f, -170f), new Vector2(440f, 54f), new Color(0.24f, 0.3f, 0.36f), out var autoLabel);
-            var mr = Button("Passthrough", t, "MIXED REALITY", new Vector2(0f, -224f + 14f), new Vector2(440f, 40f), new Color(0.2f, 0.42f, 0.62f), out var mrLabel, 18f);
+            var meeting = Button("Meeting", t, "DISCUSSION", new Vector2(-113f, -132f), new Vector2(214f, 52f), new Color(0.32f, 0.36f, 0.55f), out var meetingLabel, 19f);
+            var hold = Button("HoldQueue", t, "HOLD QUEUE", new Vector2(113f, -132f), new Vector2(214f, 52f), new Color(0.45f, 0.33f, 0.16f), out var holdLabel, 19f);
+            var auto = Button("DemoMode", t, "DEMO: ON", new Vector2(-113f, -190f), new Vector2(214f, 52f), new Color(0.24f, 0.3f, 0.36f), out var autoLabel, 19f);
+            var mr = Button("Passthrough", t, "MIXED REALITY", new Vector2(113f, -190f), new Vector2(214f, 52f), new Color(0.2f, 0.42f, 0.62f), out var mrLabel, 19f);
+            var settingsBtn = Button("Settings", t, "SETTINGS & HISTORY", new Vector2(0f, -246f), new Vector2(440f, 48f), Palette.UiButton, out _, 19f);
+
+            // Settings page (same panel, swapped in by SETTINGS & HISTORY or by pinching the done tray).
+            Transform s = View("SettingsView", canvas.transform);
+            Text("Title", s, "SETTINGS", 22f, Palette.Teal, new Vector2(0f, 250f), new Vector2(440f, 32f), TextAlignmentOptions.Left, true).characterSpacing = 6f;
+            var mode = Text("Mode", s, "", 18f, Palette.UiText, new Vector2(0f, 214f), new Vector2(440f, 30f), TextAlignmentOptions.Left);
+            mode.enableAutoSizing = true; mode.fontSizeMin = 13f; mode.fontSizeMax = 18f;
+            var enterKey = Button("EnterKey", s, "ENTER API KEY", new Vector2(-124f, 168f), new Vector2(192f, 50f), new Color(0.16f, 0.55f, 0.48f), out _, 17f);
+            var test = Button("Test", s, "TEST", new Vector2(42f, 168f), new Vector2(124f, 50f), Palette.UiButton, out _, 17f);
+            var remove = Button("RemoveKey", s, "REMOVE", new Vector2(164f, 168f), new Vector2(112f, 50f), new Color(0.42f, 0.22f, 0.22f), out _, 17f);
+            var status = Text("Status", s, "", 15f, Palette.UiMuted, new Vector2(0f, 120f), new Vector2(440f, 44f), TextAlignmentOptions.TopLeft);
+            Panel("Divider", s, new Vector2(0f, 92f), new Vector2(440f, 2f), new Color(1f, 1f, 1f, 0.12f), false);
+            var histTitle = Text("HistoryTitle", s, "WORK HISTORY", 18f, Palette.Teal, new Vector2(0f, 72f), new Vector2(440f, 28f), TextAlignmentOptions.Left, true);
+            var histBody = Text("HistoryBody", s, "", 17f, Palette.UiText, new Vector2(0f, -45f), new Vector2(440f, 200f), TextAlignmentOptions.TopLeft);
+            histBody.enableAutoSizing = true; histBody.fontSizeMin = 11f; histBody.fontSizeMax = 17f;
+            histBody.overflowMode = TextOverflowModes.Ellipsis;
+            var prev = Button("Older", s, "< OLDER", new Vector2(-113f, -172f), new Vector2(214f, 46f), Palette.UiButton, out _, 17f);
+            var next = Button("Newer", s, "NEWER >", new Vector2(113f, -172f), new Vector2(214f, 46f), Palette.UiButton, out _, 17f);
+            var reset = Button("Reset", s, "RESET SESSION", new Vector2(-113f, -236f), new Vector2(214f, 52f), new Color(0.48f, 0.2f, 0.2f), out var resetLabel, 17f);
+            var back = Button("Back", s, "BACK", new Vector2(113f, -236f), new Vector2(214f, 52f), new Color(0.32f, 0.36f, 0.55f), out _, 19f);
+
+            var settingsUI = canvas.gameObject.AddComponent<SettingsPanelUI>();
+            Wire(settingsUI, "mainView", t.gameObject);
+            Wire(settingsUI, "settingsView", s.gameObject);
+            Wire(settingsUI, "modeText", mode);
+            Wire(settingsUI, "statusText", status);
+            Wire(settingsUI, "enterKeyButton", enterKey);
+            Wire(settingsUI, "testButton", test);
+            Wire(settingsUI, "removeKeyButton", remove);
+            Wire(settingsUI, "historyTitle", histTitle);
+            Wire(settingsUI, "historyBody", histBody);
+            Wire(settingsUI, "prevButton", prev);
+            Wire(settingsUI, "nextButton", next);
+            Wire(settingsUI, "resetButton", reset);
+            Wire(settingsUI, "resetLabel", resetLabel);
+            Wire(settingsUI, "backButton", back);
+            s.gameObject.SetActive(false);
 
             var ui = canvas.gameObject.AddComponent<LayoutSelectorUI>();
             WireArray(ui, "layoutButtons", buttons.ToArray());
             WireArray(ui, "layoutHighlights", highlights.ToArray());
             Wire(ui, "currentLabel", current);
+            Wire(ui, "briefButton", brief);
             Wire(ui, "meetingButton", meeting);
             Wire(ui, "meetingLabel", meetingLabel);
             Wire(ui, "autoTasksButton", auto);
@@ -632,22 +750,39 @@ namespace AIManagerWorkspace
             Wire(ui, "passthroughButton", mr);
             Wire(ui, "passthroughLabel", mrLabel);
             Wire(ui, "passthrough", passthrough);
+            Wire(ui, "holdButton", hold);
+            Wire(ui, "holdLabel", holdLabel);
+            Wire(ui, "settingsButton", settingsBtn);
+            Wire(ui, "settings", settingsUI);
+            return canvas;
         }
 
-        private static void BuildDetailPanel(Transform platform)
+        /// <summary>Full-size child group of a panel, so a panel can swap between pages.</summary>
+        private static Transform View(string name, Transform parent)
         {
-            var canvas = WorldCanvas("AgentCard", platform, new Vector3(0.86f, DeskTopY + 0.27f, 1.08f), new Vector3(24f, 46f, 0f), new Vector2(480f, 470f), 0.001f);
+            var go = new GameObject(name, typeof(RectTransform));
+            var rt = (RectTransform)go.transform;
+            rt.SetParent(parent, false);
+            Stretch(rt);
+            return rt;
+        }
+
+        private static Canvas BuildDetailPanel(Transform deskRoot)
+        {
+            var canvas = WorldCanvas("AgentCard", deskRoot, new Vector3(0.86f, DeskTopY + 0.3f, 1.06f), new Vector3(24f, 46f, 0f), new Vector2(480f, 560f), 0.001f);
             Transform t = canvas.transform;
-            Panel("Background", t, Vector2.zero, new Vector2(480f, 470f), Palette.UiPanel);
-            var accent = Panel("Accent", t, new Vector2(0f, 226f), new Vector2(480f, 18f), Palette.Teal);
-            Text("Title", t, "SELECTED AGENT", 22f, Palette.Teal, new Vector2(0f, 190f), new Vector2(440f, 32f), TextAlignmentOptions.Left, true).characterSpacing = 6f;
-            var name = Text("Name", t, "", 36f, Palette.UiText, new Vector2(-60f, 146f), new Vector2(320f, 50f), TextAlignmentOptions.Left, true);
-            var pill = Panel("StatusPill", t, new Vector2(150f, 146f), new Vector2(150f, 40f), Palette.Teal);
-            var status = Text("Status", pill.transform, "", 17f, new Color(0.07f, 0.08f, 0.1f), Vector2.zero, new Vector2(150f, 40f), TextAlignmentOptions.Center, true);
-            var body = Text("Body", t, "", 21f, Palette.UiText, new Vector2(0f, 10f), new Vector2(440f, 210f), TextAlignmentOptions.TopLeft);
+            Panel("Background", t, Vector2.zero, new Vector2(480f, 560f), Palette.UiPanel);
+            var accent = Panel("Accent", t, new Vector2(0f, 271f), new Vector2(480f, 18f), Palette.Teal);
+            Text("Title", t, "SELECTED AGENT", 22f, Palette.Teal, new Vector2(0f, 235f), new Vector2(440f, 32f), TextAlignmentOptions.Left, true).characterSpacing = 6f;
+            var name = Text("Name", t, "", 34f, Palette.UiText, new Vector2(-60f, 190f), new Vector2(320f, 50f), TextAlignmentOptions.Left, true);
+            var pill = Panel("StatusPill", t, new Vector2(150f, 190f), new Vector2(150f, 40f), Palette.Teal);
+            var status = Text("Status", pill.transform, "", 16f, new Color(0.07f, 0.08f, 0.1f), Vector2.zero, new Vector2(150f, 40f), TextAlignmentOptions.Center, true);
+            var body = Text("Body", t, "", 21f, Palette.UiText, new Vector2(0f, 35f), new Vector2(440f, 240f), TextAlignmentOptions.TopLeft);
             body.enableAutoSizing = true; body.fontSizeMin = 14f; body.fontSizeMax = 21f;
-            var assign = Button("Assign", t, "ASSIGN TASK", new Vector2(-50f, -180f), new Vector2(340f, 60f), new Color(0.16f, 0.55f, 0.48f), out var assignLabel);
-            var close = Button("Close", t, "X", new Vector2(176f, -180f), new Vector2(88f, 60f), new Color(0.3f, 0.32f, 0.37f), out _);
+            var assign = Button("Assign", t, "ASSIGN TASK", new Vector2(-50f, -140f), new Vector2(340f, 58f), new Color(0.16f, 0.55f, 0.48f), out var assignLabel);
+            var close = Button("Close", t, "X", new Vector2(176f, -140f), new Vector2(88f, 58f), new Color(0.3f, 0.32f, 0.37f), out _);
+            var role = Button("Role", t, "CHANGE ROLE", new Vector2(-113f, -210f), new Vector2(214f, 54f), Palette.UiButton, out _, 19f);
+            var next = Button("ReviewNext", t, "REVIEW NEXT", new Vector2(113f, -210f), new Vector2(214f, 54f), new Color(0.55f, 0.42f, 0.16f), out _, 19f);
 
             var ui = canvas.gameObject.AddComponent<AgentDetailPanel>();
             Wire(ui, "accentBar", accent);
@@ -657,7 +792,43 @@ namespace AIManagerWorkspace
             Wire(ui, "bodyText", body);
             Wire(ui, "assignButton", assign);
             Wire(ui, "assignLabel", assignLabel);
+            Wire(ui, "roleButton", role);
+            Wire(ui, "nextButton", next);
             Wire(ui, "closeButton", close);
+            return canvas;
+        }
+
+        private static Canvas BuildHandMenu(PassthroughToggle passthrough)
+        {
+            var root = new GameObject("WristMenu");
+            var canvas = WorldCanvas("Panel", root.transform, Vector3.zero, Vector3.zero, new Vector2(320f, 376f), 0.0007f);
+            Transform t = canvas.transform;
+            Panel("Background", t, Vector2.zero, new Vector2(320f, 376f), Palette.UiPanel);
+            Text("Title", t, "AI MANAGER", 18f, Palette.Teal, new Vector2(0f, 166f), new Vector2(290f, 28f), TextAlignmentOptions.Center, true).characterSpacing = 6f;
+            Button Cell(string name, string label, int col, int row, Color c, out TextMeshProUGUI l) =>
+                Button(name, t, label, new Vector2(col == 0 ? -76f : 76f, 112f - row * 76f), new Vector2(144f, 66f), c, out l, 17f);
+            var brief = Cell("Brief", "BRIEF TEAM", 0, 0, new Color(0.16f, 0.55f, 0.48f), out _);
+            var demo = Cell("Demo", "DEMO: ON", 1, 0, new Color(0.24f, 0.3f, 0.36f), out var demoLabel);
+            var layout = Cell("Layout", "CLASSROOM", 0, 1, Palette.UiButton, out var layoutLabel);
+            var mr = Cell("MR", "MIXED REALITY", 1, 1, new Color(0.2f, 0.42f, 0.62f), out _);
+            var desk = Cell("Desk", "BACK TO DESK", 0, 2, new Color(0.32f, 0.36f, 0.55f), out _);
+            var fit = Cell("Fit", "FIT DESK", 1, 2, Palette.UiButton, out _);
+            var holdBtn = Button("Hold", t, "HOLD QUEUE", new Vector2(0f, 112f - 3 * 76f), new Vector2(296f, 66f), new Color(0.45f, 0.33f, 0.16f), out var holdText, 17f);
+
+            var menu = root.AddComponent<HandMenu>();
+            Wire(menu, "panel", canvas.gameObject);
+            Wire(menu, "briefButton", brief);
+            Wire(menu, "demoButton", demo);
+            Wire(menu, "demoLabel", demoLabel);
+            Wire(menu, "layoutButton", layout);
+            Wire(menu, "layoutLabel", layoutLabel);
+            Wire(menu, "mrButton", mr);
+            Wire(menu, "deskButton", desk);
+            Wire(menu, "fitButton", fit);
+            Wire(menu, "holdButton", holdBtn);
+            Wire(menu, "holdLabel", holdText);
+            Wire(menu, "passthrough", passthrough);
+            return canvas;
         }
 
         private static void BuildTeamBoard(Transform parent)
@@ -670,10 +841,11 @@ namespace AIManagerWorkspace
             Panel("Background", t, Vector2.zero, new Vector2(1840f, 720f), new Color(0.08f, 0.09f, 0.11f, 1f));
             var header = Text("Header", t, "", 58f, Palette.UiText, new Vector2(0f, 300f), new Vector2(1760f, 80f), TextAlignmentOptions.Left, true);
             Panel("Rule", t, new Vector2(0f, 252f), new Vector2(1760f, 4f), new Color(0.25f, 0.27f, 0.3f), false);
-            var roster = Text("Roster", t, "", 52f, Palette.UiText, new Vector2(0f, -10f), new Vector2(1760f, 500f), TextAlignmentOptions.TopLeft);
+            var roster = Text("Roster", t, "", 50f, Palette.UiText, new Vector2(0f, -10f), new Vector2(1760f, 500f), TextAlignmentOptions.TopLeft);
             roster.lineSpacing = 12f;
             roster.overflowMode = TextOverflowModes.Truncate;
-            var footer = Text("Footer", t, "", 38f, Palette.UiMuted, new Vector2(0f, -310f), new Vector2(1760f, 60f), TextAlignmentOptions.Left);
+            var footer = Text("Footer", t, "", 36f, Palette.UiMuted, new Vector2(0f, -310f), new Vector2(1760f, 60f), TextAlignmentOptions.Left);
+            footer.enableAutoSizing = true; footer.fontSizeMin = 24f; footer.fontSizeMax = 36f;
 
             var ui = canvas.gameObject.AddComponent<SessionDashboardUI>();
             Wire(ui, "headerText", header);
@@ -686,7 +858,8 @@ namespace AIManagerWorkspace
         private static void MarkStatic(GameObject root)
         {
             foreach (Transform t in root.GetComponentsInChildren<Transform>(true))
-                GameObjectUtility.SetStaticEditorFlags(t.gameObject, StaticEditorFlags.BatchingStatic);
+                if (t.GetComponentInParent<ReviewDesk>(true) == null)
+                    GameObjectUtility.SetStaticEditorFlags(t.gameObject, StaticEditorFlags.BatchingStatic);
         }
 
         /// <summary>The default humanoid agent (radius 0.5) cannot fit the lift gap or desk aisles.</summary>

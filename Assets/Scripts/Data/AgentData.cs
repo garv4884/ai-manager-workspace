@@ -13,7 +13,8 @@ namespace AIManagerWorkspace
         Working,
         WaitingForApproval,
         WaitingForInput,
-        Error
+        Error,
+        HasUpdate
     }
 
     /// <summary>
@@ -54,7 +55,8 @@ namespace AIManagerWorkspace
         public bool NeedsManager =>
             status == AgentStatus.WaitingForApproval ||
             status == AgentStatus.WaitingForInput ||
-            status == AgentStatus.Error;
+            status == AgentStatus.Error ||
+            status == AgentStatus.HasUpdate;
 
         public Color StatusColor => ColorFor(status);
 
@@ -65,6 +67,7 @@ namespace AIManagerWorkspace
             AgentStatus.WaitingForApproval => new Color(1.00f, 0.62f, 0.15f),
             AgentStatus.WaitingForInput => new Color(1.00f, 0.86f, 0.20f),
             AgentStatus.Error => new Color(0.95f, 0.28f, 0.28f),
+            AgentStatus.HasUpdate => new Color(0.31f, 0.82f, 0.77f),
             _ => Color.white
         };
 
@@ -75,6 +78,7 @@ namespace AIManagerWorkspace
             AgentStatus.WaitingForApproval => "NEEDS APPROVAL",
             AgentStatus.WaitingForInput => "NEEDS INPUT",
             AgentStatus.Error => "BLOCKED",
+            AgentStatus.HasUpdate => "HAS UPDATE",
             _ => "?"
         };
 

@@ -10,11 +10,10 @@ namespace AIManagerWorkspace
     /// manager's queue, rides the lift to present, and reacts to the manager's decision.
     ///
     /// Task loop:
-    ///   Free --assign--> Working --done--> NeedsApproval | NeedsInput --queue/lift/present-->
-    ///     approve        -> Free (page filed)
-    ///     request changes-> Working (revision+1) -> back to the queue
-    ///     answer         -> Working (with answer) -> back to the queue
-    ///     dismiss        -> Free (task cancelled)
+    ///   backlog --> Working --done--> a request (approval / question / choice / error / report)
+    ///   --queue / lift / present--> the manager picks one of the actions that fit the request
+    ///   (see ManagerAction.For). Answers, choices, changes and retries send the agent back to
+    ///   work; approve / acknowledge / reject end the task and the agent takes the next one.
     /// </summary>
     [RequireComponent(typeof(NavMeshAgent))]
     public class AgentController : MonoBehaviour
@@ -60,9 +59,14 @@ namespace AIManagerWorkspace
             SetStatus(AgentStatus.Free);
         }
 
-        public void SetSelected(bool selected)
+        private bool selected, hovered;
+
+        public void SetSelected(bool value) { selected = value; UpdateRing(); }
+        public void SetHovered(bool value) { hovered = value; UpdateRing(); }
+
+        private void UpdateRing()
         {
-            if (selectionRing != null) selectionRing.SetActive(selected);
+            if (selectionRing != null) selectionRing.SetActive(selected || hovered);
         }
 
         public void NotifyChanged() => Changed?.Invoke(this);
@@ -85,17 +89,81 @@ namespace AIManagerWorkspace
 
         // ── Tasks ─────────────────────────────────────────────────────────────
 
+        private readonly System.Collections.Generic.Queue<TaskData> backlog = new System.Collections.Generic.Queue<TaskData>();
+
+        /// <summary>Tasks waiting for this agent after the current one.</summary>
+        public int BacklogCount => backlog.Count;
+
+        /// <summary>Free, seated at its own desk, nothing queued: ready for demo work.</summary>
         public bool CanTakeTask =>
-            Data != null && CurrentTask == null && Data.status == AgentStatus.Free &&
+            Data != null && CurrentTask == null && backlog.Count == 0 && Data.status == AgentStatus.Free &&
             Data.activity == AgentActivity.AtDesk && IsSeated;
 
-        public bool AssignTask(TaskData task)
+        /// <summary>Assigns or queues a task. Agents in a meeting or busy pick it up when they are back at their desk.</summary>
+        public void AssignTask(TaskData task)
         {
-            if (task == null || !CanTakeTask) return false;
-            CurrentTask = task;
-            task.status = TaskExecutionStatus.InProgress;
-            StartWork();
+            if (task == null) return;
+            task.status = TaskExecutionStatus.Pending;
+            backlog.Enqueue(task);
+            NotifyChanged();
+            TryStartNext();
+        }
+
+        public void SetRole(string role)
+        {
+            if (string.IsNullOrWhiteSpace(role)) return;
+            Data.agentRole = role.Trim();
+            NotifyChanged();
+        }
+
+        /// <summary>Current task (if any) followed by the backlog, for the session save.</summary>
+        public System.Collections.Generic.List<TaskData> TasksForSave()
+        {
+            var list = new System.Collections.Generic.List<TaskData>();
+            if (CurrentTask != null) list.Add(CurrentTask);
+            list.AddRange(backlog);
+            return list;
+        }
+
+        /// <summary>
+        /// Restores saved tasks. A task that was waiting for the manager keeps its request and the
+        /// agent goes back into line (returns true; the caller enqueues in the saved order). A task
+        /// that was in progress starts over. Must be called while the agent is idle at its desk.
+        /// </summary>
+        public bool RestoreTasks(System.Collections.Generic.List<TaskData> tasks)
+        {
+            if (tasks == null || tasks.Count == 0) return false;
+            TaskData first = tasks[0];
+            bool waits = first.status == TaskExecutionStatus.WaitingForUser && first.request != RequestKind.None;
+            for (int i = waits ? 1 : 0; i < tasks.Count; i++)
+            {
+                TaskData t = tasks[i];
+                if (t == null) continue;
+                if (t.status != TaskExecutionStatus.Pending) { t.status = TaskExecutionStatus.Pending; t.request = RequestKind.None; t.progress = 0f; }
+                backlog.Enqueue(t);
+            }
+            if (!waits) { TryStartNext(); return false; }
+
+            CurrentTask = first;
+            first.progress = 1f;
+            SetStatus(first.request switch
+            {
+                RequestKind.Question => AgentStatus.WaitingForInput,
+                RequestKind.Choice => AgentStatus.WaitingForInput,
+                RequestKind.Error => AgentStatus.Error,
+                RequestKind.Report => AgentStatus.HasUpdate,
+                _ => AgentStatus.WaitingForApproval
+            });
             return true;
+        }
+
+        /// <summary>Starts the next queued task if the agent is idle at its desk.</summary>
+        private void TryStartNext()
+        {
+            if (CurrentTask != null || backlog.Count == 0) return;
+            if (Data.status != AgentStatus.Free || Data.activity != AgentActivity.AtDesk || !IsSeated) return;
+            CurrentTask = backlog.Dequeue();
+            StartWork();
         }
 
         private void StartWork()
@@ -103,6 +171,7 @@ namespace AIManagerWorkspace
             if (workRoutine != null) StopCoroutine(workRoutine);
             CurrentTask.progress = 0f;
             CurrentTask.status = TaskExecutionStatus.InProgress;
+            CurrentTask.request = RequestKind.None;
             SetStatus(AgentStatus.Working);
             workRoutine = StartCoroutine(WorkRoutine());
         }
@@ -119,6 +188,7 @@ namespace AIManagerWorkspace
 
             Vector2 range = ai.SimulatedWorkSeconds;
             float minTime = ai.IsLive ? 2.5f : UnityEngine.Random.Range(range.x, range.y);
+            if (task.isWrapUp) minTime = 2f;
             float t = 0f;
             while (!done || t < minTime)
             {
@@ -131,70 +201,117 @@ namespace AIManagerWorkspace
             }
 
             workRoutine = null;
-            if (task != CurrentTask) yield break;   // dismissed meanwhile
+            if (task != CurrentTask) yield break;   // dropped meanwhile
 
             task.progress = 1f;
             task.status = TaskExecutionStatus.WaitingForUser;
-            if (result.failed)
+            task.request = result.kind;
+            task.options.Clear();
+            switch (result.kind)
             {
-                task.error = result.text;
-                SetStatus(AgentStatus.Error);
-            }
-            else if (result.isQuestion)
-            {
-                task.question = result.text;
-                SetStatus(AgentStatus.WaitingForInput);
-            }
-            else
-            {
-                task.output = result.text;
-                SetStatus(AgentStatus.WaitingForApproval);
+                case RequestKind.Error:
+                    task.error = result.text;
+                    SetStatus(AgentStatus.Error);
+                    break;
+                case RequestKind.Question:
+                    task.question = result.text;
+                    task.askedOnce = true;
+                    SetStatus(AgentStatus.WaitingForInput);
+                    break;
+                case RequestKind.Choice:
+                    task.question = result.text;
+                    task.askedOnce = true;
+                    if (result.options != null) task.options.AddRange(result.options);
+                    SetStatus(AgentStatus.WaitingForInput);
+                    break;
+                case RequestKind.Report:
+                    task.output = result.text;
+                    SetStatus(AgentStatus.HasUpdate);
+                    break;
+                default:
+                    task.request = RequestKind.Approval;
+                    task.output = result.text;
+                    SetStatus(AgentStatus.WaitingForApproval);
+                    break;
             }
 
             avatar.SetPose(AgentAvatar.Pose.Sitting);
+            GameManager.Instance.Queue.Desk.PlayNotifyAt(transform.position);
             GameManager.Instance.Queue.Enqueue(this);
         }
 
         // ── Decisions (only while presenting on the lift) ─────────────────────
 
-        public bool Approve()
-        {
-            if (!IsReadyPresenter() || (Data.status != AgentStatus.WaitingForApproval && Data.status != AgentStatus.Error))
-                return false;
+        public System.Collections.Generic.List<ManagerAction> AvailableActions() =>
+            IsReadyPresenter() ? ManagerAction.For(CurrentTask, Data.agentName) : new System.Collections.Generic.List<ManagerAction>();
 
-            if (Data.status == AgentStatus.Error)
-            {
-                CurrentTask.error = "";
-                return GameManager.Instance.Queue.FinishPresenting(this, QueueManager.PageExit.HandBack, StartWork, AgentStatus.Working);
-            }
-
-            CurrentTask.status = TaskExecutionStatus.Completed;
-            CurrentTask.completedAt = DateTime.UtcNow;
-            Data.completedTasks++;
-            return GameManager.Instance.Queue.FinishPresenting(this, QueueManager.PageExit.File, null, AgentStatus.Free, clearTask: true);
-        }
-
-        public bool RequestChanges(string feedback)
-        {
-            if (!IsReadyPresenter() || Data.status != AgentStatus.WaitingForApproval) return false;
-            CurrentTask.feedback = feedback?.Trim() ?? "";
-            CurrentTask.revision++;
-            return GameManager.Instance.Queue.FinishPresenting(this, QueueManager.PageExit.HandBack, StartWork, AgentStatus.Working);
-        }
-
-        public bool ProvideInput(string answer)
-        {
-            if (!IsReadyPresenter() || Data.status != AgentStatus.WaitingForInput || string.IsNullOrWhiteSpace(answer))
-                return false;
-            CurrentTask.answer = answer.Trim();
-            return GameManager.Instance.Queue.FinishPresenting(this, QueueManager.PageExit.HandBack, StartWork, AgentStatus.Working);
-        }
-
-        public bool Dismiss()
+        /// <summary>Carries out a manager decision. <paramref name="text"/> is the typed answer/feedback when the action needs one.</summary>
+        public bool Perform(ManagerAction action, string text = null)
         {
             if (!IsReadyPresenter()) return false;
-            CurrentTask.status = TaskExecutionStatus.Cancelled;
-            return GameManager.Instance.Queue.FinishPresenting(this, QueueManager.PageExit.Discard, null, AgentStatus.Free, clearTask: true);
+            TaskData task = CurrentTask;
+            QueueManager q = GameManager.Instance.Queue;
+            text = text?.Trim() ?? "";
+
+            switch (action.type)
+            {
+                case ManagerActionType.Approve:
+                case ManagerActionType.Acknowledge:
+                    task.status = TaskExecutionStatus.Completed;
+                    task.completedAt = DateTime.UtcNow;
+                    Data.completedTasks++;
+                    Record(task, task.isTeamPlan ? "Plan approved" : task.isWrapUp ? "Wrap-up read"
+                        : action.type == ManagerActionType.Acknowledge ? "Acknowledged" : "Approved");
+                    if (task.isTeamPlan) GameManager.Instance.Planner.Execute(task);
+                    else GameManager.Instance.Planner.OnTaskFinished(task);
+                    return q.FinishPresenting(this, QueueManager.PageExit.File, AfterTaskEnded, AgentStatus.Free, clearTask: true);
+
+                case ManagerActionType.FollowUp:
+                    task.status = TaskExecutionStatus.Completed;
+                    Data.completedTasks++;
+                    Record(task, "Acknowledged, follow-up queued");
+                    GameManager.Instance.Planner.OnTaskFinished(task);
+                    if (text.Length > 0) backlog.Enqueue(GameManager.Instance.Dispatcher.CreateCustomTask(text));
+                    return q.FinishPresenting(this, QueueManager.PageExit.File, AfterTaskEnded, AgentStatus.Free, clearTask: true);
+
+                case ManagerActionType.Reject:
+                    task.status = TaskExecutionStatus.Cancelled;
+                    Record(task, "Dropped");
+                    GameManager.Instance.Planner.OnTaskFinished(task);
+                    return q.FinishPresenting(this, QueueManager.PageExit.Discard, AfterTaskEnded, AgentStatus.Free, clearTask: true);
+
+                case ManagerActionType.RequestChanges:
+                    task.feedback = text;
+                    task.revision++;
+                    return q.FinishPresenting(this, QueueManager.PageExit.HandBack, StartWork, AgentStatus.Working);
+
+                case ManagerActionType.Answer:
+                    if (text.Length == 0) return false;
+                    task.answer = text;
+                    return q.FinishPresenting(this, QueueManager.PageExit.HandBack, StartWork, AgentStatus.Working);
+
+                case ManagerActionType.LetAgentDecide:
+                    task.answer = "Use your best judgment.";
+                    return q.FinishPresenting(this, QueueManager.PageExit.HandBack, StartWork, AgentStatus.Working);
+
+                case ManagerActionType.ChooseOption:
+                    if (action.optionIndex < 0 || action.optionIndex >= task.options.Count) return false;
+                    task.answer = task.options[action.optionIndex];
+                    return q.FinishPresenting(this, QueueManager.PageExit.HandBack, StartWork, AgentStatus.Working);
+
+                case ManagerActionType.Retry:
+                    task.error = "";
+                    return q.FinishPresenting(this, QueueManager.PageExit.HandBack, StartWork, AgentStatus.Working);
+            }
+            return false;
+        }
+
+        private void AfterTaskEnded() => TryStartNext();
+
+        private void Record(TaskData task, string outcome)
+        {
+            SessionStore store = GameManager.Instance.Session;
+            if (store != null) store.Record(this, task, outcome);
         }
 
         private bool IsReadyPresenter()
@@ -224,7 +341,7 @@ namespace AIManagerWorkspace
         public void ReturnToDesk(Action onSeated = null)
         {
             StartMove(SitRoutine(Workstation.SeatPoint, () => Workstation.ApproachPosition,
-                AgentActivity.WalkingToDesk, AgentActivity.AtDesk, onSeated));
+                AgentActivity.WalkingToDesk, AgentActivity.AtDesk, onSeated ?? TryStartNext));
         }
 
         public void GoToMeeting(Transform seat)

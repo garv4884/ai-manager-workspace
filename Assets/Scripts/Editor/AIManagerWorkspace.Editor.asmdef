@@ -3,11 +3,16 @@
     "rootNamespace": "AIManagerWorkspace",
     "references": [
         "AIManagerWorkspace",
-        "Unity.XR.Interaction.Toolkit",
-        "Unity.XR.Hands",
         "Unity.AI.Navigation",
         "Unity.TextMeshPro",
-        "UnityEngine.UI"
+        "UnityEngine.UI",
+        "Unity.InputSystem",
+        "Unity.XR.OpenXR",
+        "Unity.XR.OpenXR.Editor",
+        "Oculus.VR",
+        "Oculus.VR.Editor",
+        "Oculus.Interaction",
+        "Oculus.Interaction.OVR"
     ],
     "includePlatforms": [
         "Editor"

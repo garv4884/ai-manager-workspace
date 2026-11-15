@@ -2,7 +2,10 @@ using UnityEngine;
 
 namespace AIManagerWorkspace
 {
-    /// <summary>Routes recognised hand gestures to the manager's review decisions.</summary>
+    /// <summary>
+    /// Routes gestures to whichever action fits the current request: thumbs up never "approves"
+    /// a question, it lets the agent decide; thumbs down only works where changes can be asked for.
+    /// </summary>
     public class GestureInteractionManager : MonoBehaviour
     {
         [SerializeField] private HandGestureRecognizer recognizer;
@@ -12,22 +15,22 @@ namespace AIManagerWorkspace
         private void OnEnable()
         {
             if (recognizer == null) recognizer = GetComponent<HandGestureRecognizer>();
-            recognizer.OnThumbsUp.AddListener(Approve);
-            recognizer.OnThumbsDown.AddListener(Changes);
+            recognizer.OnThumbsUp.AddListener(Primary);
+            recognizer.OnThumbsDown.AddListener(Rework);
             recognizer.OnPalmPush.AddListener(Dismiss);
         }
 
         private void OnDisable()
         {
-            recognizer.OnThumbsUp.RemoveListener(Approve);
-            recognizer.OnThumbsDown.RemoveListener(Changes);
+            recognizer.OnThumbsUp.RemoveListener(Primary);
+            recognizer.OnThumbsDown.RemoveListener(Rework);
             recognizer.OnPalmPush.RemoveListener(Dismiss);
         }
 
         private static bool Typing => GameManager.Instance.Keyboard.IsOpen;
 
-        private void Approve() { if (!Typing) GameManager.Instance.Approve(); }
-        private void Changes() { if (!Typing) GameManager.Instance.RequestChanges(); }
-        private void Dismiss() { GameManager.Instance.Dismiss(); }
+        private void Primary() { if (!Typing) GameManager.Instance.PerformPrimary(); }
+        private void Rework() { if (!Typing) GameManager.Instance.PerformRework(); }
+        private void Dismiss() { if (!Typing) GameManager.Instance.PerformDismiss(); }
     }
 }

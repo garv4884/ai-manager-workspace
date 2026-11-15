@@ -56,23 +56,30 @@ namespace AIManagerWorkspace
             if (bodyText != null)
             {
                 if (t == null) bodyText.text = "";
-                else if (d.status == AgentStatus.WaitingForInput)
-                    bodyText.text = $"<color=#B07A00><b>QUESTION</b></color>\n{t.question}";
-                else if (d.status == AgentStatus.Error)
-                    bodyText.text = $"<color=#C0392B><b>BLOCKED</b></color>\n{t.error}\n\nApprove to retry, or dismiss the task.";
-                else
-                    bodyText.text = t.output;
+                else switch (t.request)
+                {
+                    case RequestKind.Question:
+                        bodyText.text = $"<color=#B07A00><b>QUESTION</b></color>\n{t.question}";
+                        break;
+                    case RequestKind.Choice:
+                        var sb = new System.Text.StringBuilder($"<color=#B07A00><b>PLEASE CHOOSE</b></color>\n{t.question}\n");
+                        for (int i = 0; i < t.options.Count; i++) sb.Append($"\n<b>{i + 1}.</b> {t.options[i]}");
+                        bodyText.text = sb.ToString();
+                        break;
+                    case RequestKind.Error:
+                        bodyText.text = $"<color=#C0392B><b>BLOCKED</b></color>\n{t.error}";
+                        break;
+                    case RequestKind.Report:
+                        bodyText.text = $"<color=#1F8A80><b>UPDATE</b></color>\n{t.output}";
+                        break;
+                    default:
+                        bodyText.text = t.output;
+                        break;
+                }
             }
 
             if (promptText != null)
-            {
-                promptText.text = d.status switch
-                {
-                    AgentStatus.WaitingForInput => "Type your answer on the desk keyboard",
-                    AgentStatus.Error => "Thumbs up: retry      Palm push: dismiss",
-                    _ => "Thumbs up: approve      Thumbs down: changes      Palm push: dismiss"
-                };
-            }
+                promptText.text = ManagerAction.GestureHint(ManagerAction.For(t, d.agentName));
         }
 
         private void AttachToHands()

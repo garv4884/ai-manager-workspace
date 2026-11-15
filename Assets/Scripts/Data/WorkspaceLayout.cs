@@ -46,11 +46,11 @@ namespace AIManagerWorkspace
             switch (type)
             {
                 case LayoutType.Grid: Grid(list, count, center); break;
-                case LayoutType.Circle: Ring(list, count, center, Mathf.Max(6.2f, count * 1.05f), 25f); break;
+                case LayoutType.Circle: Ring(list, count, center, Mathf.Max(7.0f, count * 1.1f), 22f); break;
                 case LayoutType.UShape: UShape(list, count, center); break;
                 case LayoutType.HubSpoke: Pods(list, count, center); break;
                 case LayoutType.Coworking: Coworking(list, count, center); break;
-                case LayoutType.WarRoom: Ring(list, count, center, 4.0f, 32f); break;
+                case LayoutType.WarRoom: Ring(list, count, center, 5.2f, 30f); break;
                 default: Grid(list, count, center); break;
             }
             return list;
@@ -65,12 +65,12 @@ namespace AIManagerWorkspace
 
         private static void Grid(List<DeskPose> list, int count, Vector3 c)
         {
-            float[] xs = { -2.2f, 2.2f, -4.6f, 4.6f, -7.0f, 7.0f };
+            float[] xs = { -2.4f, 2.4f, -5.0f, 5.0f, -7.6f, 7.6f };
             int perRow = count > 8 ? 6 : 4;
             for (int i = 0; i < count; i++)
             {
                 int row = i / perRow, col = i % perRow;
-                Vector3 p = c + new Vector3(xs[col], 0f, 5.8f + row * 3.0f);
+                Vector3 p = c + new Vector3(xs[col], 0f, 6.8f + row * 3.2f);
                 list.Add(new DeskPose(p, Facing(p, c)));
             }
         }
@@ -93,18 +93,18 @@ namespace AIManagerWorkspace
             Vector3 focus = c + new Vector3(0f, 0f, 7.5f);
             for (int i = 0; i < side; i++)
             {
-                Vector3 p = c + new Vector3(-5.4f, 0f, 5.0f + i * 2.6f);
+                Vector3 p = c + new Vector3(-6.2f, 0f, 5.6f + i * 2.8f);
                 list.Add(new DeskPose(p, Facing(p, new Vector3(c.x, 0f, p.z))));
             }
             for (int i = 0; i < back; i++)
             {
-                float x = back == 1 ? 0f : Mathf.Lerp(-2.4f, 2.4f, i / (float)(back - 1));
-                Vector3 p = c + new Vector3(x, 0f, 5.0f + side * 2.6f + 0.6f);
+                float x = back == 1 ? 0f : Mathf.Lerp(-2.8f, 2.8f, i / (float)(back - 1));
+                Vector3 p = c + new Vector3(x, 0f, 5.6f + side * 2.8f + 0.8f);
                 list.Add(new DeskPose(p, Facing(p, c)));
             }
             for (int i = 0; i < side; i++)
             {
-                Vector3 p = c + new Vector3(5.4f, 0f, 5.0f + i * 2.6f);
+                Vector3 p = c + new Vector3(6.2f, 0f, 5.6f + i * 2.8f);
                 list.Add(new DeskPose(p, Facing(p, new Vector3(c.x, 0f, p.z))));
             }
         }
@@ -113,7 +113,7 @@ namespace AIManagerWorkspace
         {
             Vector3[] centres =
             {
-                c + new Vector3(-5.2f, 0f, 7.2f), c + new Vector3(5.2f, 0f, 7.2f),
+                c + new Vector3(-5.4f, 0f, 8.4f), c + new Vector3(5.4f, 0f, 8.4f),
                 c + new Vector3(-6.0f, 0f, -1.6f), c + new Vector3(5.6f, 0f, -1.2f)
             };
             const int perPod = 3;
@@ -131,9 +131,9 @@ namespace AIManagerWorkspace
         {
             Vector3[] spots =
             {
-                new Vector3(-3.0f, 0f, 5.2f), new Vector3(3.2f, 0f, 4.6f), new Vector3(-6.6f, 0f, 8.4f),
-                new Vector3(6.2f, 0f, 7.8f), new Vector3(-2.4f, 0f, 11.0f), new Vector3(3.0f, 0f, 11.6f),
-                new Vector3(-8.0f, 0f, 2.0f), new Vector3(8.4f, 0f, 1.6f)
+                new Vector3(-3.4f, 0f, 6.4f), new Vector3(3.6f, 0f, 5.8f), new Vector3(-7.2f, 0f, 9.0f),
+                new Vector3(6.8f, 0f, 8.6f), new Vector3(-2.6f, 0f, 11.4f), new Vector3(3.2f, 0f, 12.0f),
+                new Vector3(-8.2f, 0f, 3.0f), new Vector3(8.4f, 0f, 2.6f)
             };
             float[] twist = { 18f, -14f, 30f, -26f, 8f, -12f, 40f, -38f };
             for (int i = 0; i < count; i++)
