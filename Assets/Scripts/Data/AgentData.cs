@@ -38,6 +38,16 @@ namespace AIManagerWorkspace
         public string agentId;
         public string agentName;
         public string agentRole;
+        /// <summary>The built-in profile this agent was spawned from (stable id for saves).</summary>
+        public string profileName;
+        /// <summary>Name of the real agent on the bridge this desk represents (empty = simulated / Claude API).</summary>
+        public string linkedTo = "";
+        /// <summary>What the linked agent is, e.g. "Claude Code", "script", "CI".</summary>
+        public string linkedKind = "";
+        /// <summary>The agent's own role, kept while a linked agent's role is shown.</summary>
+        public string linkedRoleBeforeLink = "";
+        /// <summary>This agent's brain: "" = the team default, "sim" = simulation, else a provider id (anthropic, openai, gemini, custom).</summary>
+        public string backend = "";
         public Color accentColor = Color.white;
         public AgentStatus status = AgentStatus.Free;
         public AgentActivity activity = AgentActivity.AtDesk;
@@ -48,9 +58,12 @@ namespace AIManagerWorkspace
         {
             agentId = Guid.NewGuid().ToString("N");
             agentName = name;
+            profileName = name;
             agentRole = role;
             accentColor = accent;
         }
+
+        public bool IsLinked => !string.IsNullOrEmpty(linkedTo);
 
         public bool NeedsManager =>
             status == AgentStatus.WaitingForApproval ||
@@ -84,7 +97,7 @@ namespace AIManagerWorkspace
 
         public string ActivityLabel => activity switch
         {
-            AgentActivity.AtDesk => status == AgentStatus.Free ? "At desk" : "",
+            AgentActivity.AtDesk => status == AgentStatus.Free ? "At desk" : NeedsManager ? "Waiting at desk" : "",
             AgentActivity.WalkingToDesk => "Returning to desk",
             AgentActivity.WalkingToQueue => "Walking to you",
             AgentActivity.InQueue => queuePosition >= 0 ? $"#{queuePosition + 1} in line" : "In line",

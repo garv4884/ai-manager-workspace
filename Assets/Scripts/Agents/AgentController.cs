@@ -37,6 +37,8 @@ namespace AIManagerWorkspace
 
         /// <summary>Raised whenever status, activity, task or queue position changes.</summary>
         public event Action<AgentController> Changed;
+        /// <summary>Raised a few times a second while work progresses (cheap UI updates; no save).</summary>
+        public event Action<AgentController> ProgressChanged;
 
         private void Awake()
         {
@@ -76,6 +78,7 @@ namespace AIManagerWorkspace
         private void SetStatus(AgentStatus status)
         {
             Data.status = status;
+            avatar.SetStatus(status);
             page.SetVisible(Data.NeedsManager);
             avatar.SetCarrying(Data.NeedsManager);
             NotifyChanged();
@@ -103,6 +106,11 @@ namespace AIManagerWorkspace
         public void AssignTask(TaskData task)
         {
             if (task == null) return;
+            if (Data.IsLinked && !task.isTeamPlan && !task.isWrapUp && GameManager.Instance.Bridge != null)
+            {
+                SendToLinkedAgent(task);
+                return;
+            }
             task.status = TaskExecutionStatus.Pending;
             backlog.Enqueue(task);
             NotifyChanged();
@@ -120,8 +128,8 @@ namespace AIManagerWorkspace
         public System.Collections.Generic.List<TaskData> TasksForSave()
         {
             var list = new System.Collections.Generic.List<TaskData>();
-            if (CurrentTask != null) list.Add(CurrentTask);
-            list.AddRange(backlog);
+            if (CurrentTask != null && !CurrentTask.isExternal) list.Add(CurrentTask);
+            foreach (var t in backlog) if (!t.isExternal) list.Add(t);
             return list;
         }
 
@@ -160,6 +168,11 @@ namespace AIManagerWorkspace
         /// <summary>Starts the next queued task if the agent is idle at its desk.</summary>
         private void TryStartNext()
         {
+            if (CurrentTask == null && externalRequests.Count > 0 && !GameManager.Instance.Queue.IsInLine(this))
+            {
+                PresentExternal(externalRequests.Dequeue());
+                return;
+            }
             if (CurrentTask != null || backlog.Count == 0) return;
             if (Data.status != AgentStatus.Free || Data.activity != AgentActivity.AtDesk || !IsSeated) return;
             CurrentTask = backlog.Dequeue();
@@ -187,8 +200,8 @@ namespace AIManagerWorkspace
             ai.RequestWork(Data, task, r => { result = r; done = true; });
 
             Vector2 range = ai.SimulatedWorkSeconds;
-            float minTime = ai.IsLive ? 2.5f : UnityEngine.Random.Range(range.x, range.y);
-            if (task.isWrapUp) minTime = 2f;
+            float minTime = ai.BrainFor(Data) != null ? 2.5f : UnityEngine.Random.Range(range.x, range.y);
+            if (task.isWrapUp || task.quick) minTime = 2f;
             float t = 0f;
             while (!done || t < minTime)
             {
@@ -196,7 +209,7 @@ namespace AIManagerWorkspace
                 task.progress = done
                     ? Mathf.Max(task.progress, Mathf.Clamp01(t / minTime))
                     : Mathf.Min(0.9f, 1f - Mathf.Exp(-t / (minTime * 0.8f)));
-                if (Time.frameCount % 15 == 0) NotifyChanged();
+                if (Time.frameCount % 15 == 0) ProgressChanged?.Invoke(this);
                 yield return null;
             }
 
@@ -252,6 +265,7 @@ namespace AIManagerWorkspace
             TaskData task = CurrentTask;
             QueueManager q = GameManager.Instance.Queue;
             text = text?.Trim() ?? "";
+            if (task.isExternal) return PerformExternal(action, text);
 
             switch (action.type)
             {
@@ -260,6 +274,7 @@ namespace AIManagerWorkspace
                     task.status = TaskExecutionStatus.Completed;
                     task.completedAt = DateTime.UtcNow;
                     Data.completedTasks++;
+                    avatar.React(true);
                     Record(task, task.isTeamPlan ? "Plan approved" : task.isWrapUp ? "Wrap-up read"
                         : action.type == ManagerActionType.Acknowledge ? "Acknowledged" : "Approved");
                     if (task.isTeamPlan) GameManager.Instance.Planner.Execute(task);
@@ -276,8 +291,10 @@ namespace AIManagerWorkspace
 
                 case ManagerActionType.Reject:
                     task.status = TaskExecutionStatus.Cancelled;
+                    avatar.React(false);
                     Record(task, "Dropped");
-                    GameManager.Instance.Planner.OnTaskFinished(task);
+                    if (task.isTeamPlan) GameManager.Instance.Planner.CloseBrief(task.planId);
+                    else GameManager.Instance.Planner.OnTaskFinished(task);
                     return q.FinishPresenting(this, QueueManager.PageExit.Discard, AfterTaskEnded, AgentStatus.Free, clearTask: true);
 
                 case ManagerActionType.RequestChanges:
@@ -308,6 +325,203 @@ namespace AIManagerWorkspace
 
         private void AfterTaskEnded() => TryStartNext();
 
+        // ── Bridge: this desk stands in for a real agent ──────────────────────
+
+        private readonly System.Collections.Generic.Queue<TaskData> externalRequests = new System.Collections.Generic.Queue<TaskData>();
+        private readonly System.Collections.Generic.Dictionary<string, TaskData> sentTasks = new System.Collections.Generic.Dictionary<string, TaskData>();
+        private string externalTitle = "";
+        private string pendingCancel;
+
+        /// <summary>Called when this agent's page lands: applies a cancel that arrived during the lift ride.</summary>
+        public bool ApplyPendingCancel()
+        {
+            if (string.IsNullOrEmpty(pendingCancel)) return false;
+            bool match = CurrentTask != null && CurrentTask.externalId == pendingCancel;
+            pendingCancel = null;
+            return match && GameManager.Instance.Queue.Withdraw(this, AgentStatus.Free);
+        }
+        private float externalProgress = -1f;
+
+        /// <summary>What the agent is doing, for tags and boards (current task, or what a linked agent reported).</summary>
+        public string WorkTitle => CurrentTask != null ? CurrentTask.title : externalTitle;
+        /// <summary>0..1, or -1 when unknown.</summary>
+        public float WorkProgress => CurrentTask != null ? CurrentTask.progress : externalProgress;
+
+        public void LinkTo(string bridgeName, string kind, string role)
+        {
+            if (!Data.IsLinked) Data.linkedRoleBeforeLink = Data.agentRole;
+            Data.linkedTo = bridgeName;
+            Data.linkedKind = string.IsNullOrEmpty(kind) ? "agent" : kind;
+            Data.agentName = bridgeName;
+            Data.agentRole = !string.IsNullOrWhiteSpace(role) ? role.Trim() : "Live agent";
+            Workstation.SetOwner(this);
+            avatar.SetLinked(true);
+            NotifyChanged();
+        }
+
+        public void Unlink()
+        {
+            if (!Data.IsLinked) return;
+            Data.linkedTo = "";
+            Data.linkedKind = "";
+            Data.agentName = Data.profileName;
+            if (!string.IsNullOrEmpty(Data.linkedRoleBeforeLink)) Data.agentRole = Data.linkedRoleBeforeLink;
+            externalRequests.Clear();
+            sentTasks.Clear();
+            externalTitle = "";
+            externalProgress = -1f;
+            Workstation.SetOwner(this);
+            avatar.SetLinked(false);
+            if (!GameManager.Instance.Queue.IsInLine(this) && CurrentTask == null) SetStatus(AgentStatus.Free);
+            NotifyChanged();
+        }
+
+        /// <summary>Status reported by the real agent ("working" / "idle"), shown while it isn't waiting for you.</summary>
+        public void SetExternalState(string state, string title, float progress)
+        {
+            externalTitle = title ?? "";
+            externalProgress = progress;
+            if (CurrentTask != null || GameManager.Instance.Queue.IsInLine(this)) { NotifyChanged(); return; }
+            bool working = state == "working";
+            if (working != (Data.status == AgentStatus.Working)) SetStatus(working ? AgentStatus.Working : AgentStatus.Free);
+            if (IsSeated) avatar.SetPose(working ? AgentAvatar.Pose.Typing : AgentAvatar.Pose.Sitting);
+            NotifyChanged();
+        }
+
+        /// <summary>A request from the real agent: it walks it up to you like any other page.</summary>
+        public void ReceiveExternalRequest(TaskData request)
+        {
+            // Already presenting or queued (snapshot after a reconnect re-sends pending requests).
+            if (CurrentTask != null && CurrentTask.externalId == request.externalId) return;
+            foreach (var queued in externalRequests) if (queued.externalId == request.externalId) return;
+
+            // A request about a task you assigned (brief / desk card) reuses that task, so the goal tracks it.
+            if (!string.IsNullOrEmpty(request.externalTaskId) && sentTasks.TryGetValue(request.externalTaskId, out var original))
+            {
+                original.isExternal = true;
+                original.externalId = request.externalId;
+                original.request = request.request;
+                original.output = request.output;
+                original.question = request.question;
+                original.error = request.error;
+                original.options = request.options;
+                request = original;
+            }
+            if (CurrentTask != null || GameManager.Instance.Queue.IsInLine(this)) { externalRequests.Enqueue(request); NotifyChanged(); return; }
+            PresentExternal(request);
+        }
+
+        /// <summary>The real agent withdrew a request (answered elsewhere or timed out).</summary>
+        public void CancelExternalRequest(string requestId)
+        {
+            if (CurrentTask != null && CurrentTask.isExternal && CurrentTask.externalId == requestId)
+            {
+                // Riding the lift: can't leave mid-ride, so withdraw as soon as the page lands.
+                if (!GameManager.Instance.Queue.Withdraw(this, AgentStatus.Free)) pendingCancel = requestId;
+                return;
+            }
+            var keep = new System.Collections.Generic.List<TaskData>(externalRequests);
+            keep.RemoveAll(t => t.externalId == requestId);
+            externalRequests.Clear();
+            foreach (var t in keep) externalRequests.Enqueue(t);
+            NotifyChanged();
+        }
+
+        private void PresentExternal(TaskData request)
+        {
+            if (workRoutine != null) { StopCoroutine(workRoutine); workRoutine = null; }
+            CurrentTask = request;
+            request.progress = 1f;
+            request.status = TaskExecutionStatus.WaitingForUser;
+            SetStatus(request.request switch
+            {
+                RequestKind.Question => AgentStatus.WaitingForInput,
+                RequestKind.Choice => AgentStatus.WaitingForInput,
+                RequestKind.Error => AgentStatus.Error,
+                RequestKind.Report => AgentStatus.HasUpdate,
+                _ => AgentStatus.WaitingForApproval
+            });
+            avatar.SetPose(AgentAvatar.Pose.Sitting);
+            GameManager.Instance.Queue.Desk.PlayNotifyAt(transform.position);
+            GameManager.Instance.Queue.Enqueue(this);
+        }
+
+        private void SendToLinkedAgent(TaskData task)
+        {
+            task.status = TaskExecutionStatus.InProgress;
+            sentTasks[task.taskId] = task;
+            GameManager.Instance.Bridge.SendTask(this, task);
+            externalTitle = task.title;
+            externalProgress = -1f;
+            if (CurrentTask == null && !GameManager.Instance.Queue.IsInLine(this))
+            {
+                SetStatus(AgentStatus.Working);
+                if (IsSeated) avatar.SetPose(AgentAvatar.Pose.Typing);
+            }
+            NotifyChanged();
+        }
+
+        private bool PerformExternal(ManagerAction action, string text)
+        {
+            TaskData task = CurrentTask;
+            QueueManager q = GameManager.Instance.Queue;
+            string verb, value = text, outcome;
+            QueueManager.PageExit exit = QueueManager.PageExit.HandBack;
+            AgentStatus next = AgentStatus.Working;
+            bool finished = false, dropped = false;
+
+            switch (action.type)
+            {
+                case ManagerActionType.Approve: verb = "approve"; outcome = "Approved"; exit = QueueManager.PageExit.File; finished = true; break;
+                case ManagerActionType.Acknowledge: verb = "ack"; outcome = "Acknowledged"; exit = QueueManager.PageExit.File; finished = true; break;
+                case ManagerActionType.FollowUp: verb = "followup"; outcome = "Acknowledged, follow-up sent"; exit = QueueManager.PageExit.File; finished = true; break;
+                case ManagerActionType.Reject: verb = "reject"; outcome = "Dropped"; exit = QueueManager.PageExit.Discard; next = AgentStatus.Free; dropped = true; break;
+                case ManagerActionType.RequestChanges: verb = "changes"; outcome = "Changes requested"; task.revision++; break;
+                case ManagerActionType.Answer:
+                    if (text.Length == 0) return false;
+                    verb = "answer"; outcome = "Answered"; break;
+                case ManagerActionType.LetAgentDecide: verb = "decide"; value = "Use your best judgment."; outcome = "Left to the agent"; break;
+                case ManagerActionType.ChooseOption:
+                    if (action.optionIndex < 0 || action.optionIndex >= task.options.Count) return false;
+                    verb = "choose"; value = task.options[action.optionIndex]; outcome = $"Chose: {value}"; break;
+                case ManagerActionType.Retry: verb = "retry"; outcome = "Retry"; break;
+                default: return false;
+            }
+
+            GameManager.Instance.Bridge.SendDecision(task.externalId, verb, value);
+            Record(task, outcome);
+            if (finished) { task.status = TaskExecutionStatus.Completed; task.completedAt = DateTime.UtcNow; Data.completedTasks++; }
+            if (dropped) task.status = TaskExecutionStatus.Cancelled;
+            if ((finished || dropped) && !string.IsNullOrEmpty(task.planId)) GameManager.Instance.Planner.OnTaskFinished(task);
+            if (finished || dropped) sentTasks.Remove(task.taskId);
+            externalTitle = finished || dropped ? "" : task.title;
+            return q.FinishPresenting(this, exit, AfterTaskEnded, next, clearTask: true);
+        }
+
+        /// <summary>Leaves the team: unfinished work is dropped and the desk is packed away.</summary>
+        public void Retire()
+        {
+            StopAllCoroutines();
+            var dropped = new System.Collections.Generic.List<TaskData>();
+            if (CurrentTask != null) dropped.Add(CurrentTask);
+            dropped.AddRange(backlog);
+            backlog.Clear();
+            CurrentTask = null;
+            foreach (var t in dropped)
+            {
+                if (t.isExternal) continue;
+                t.status = TaskExecutionStatus.Cancelled;
+                Record(t, "Dropped (agent left)");
+                if (t.isTeamPlan) GameManager.Instance.Planner.CloseBrief(t.planId);
+                else GameManager.Instance.Planner.OnTaskFinished(t);
+            }
+            if (GameManager.Instance.Keyboard.IsOpenFor(this)) GameManager.Instance.Keyboard.Close();
+            transform.SetParent(null, true);
+            Workstation.SetOwner(null);
+            Workstation.gameObject.SetActive(false);
+            Destroy(gameObject);
+        }
+
         private void Record(TaskData task, string outcome)
         {
             SessionStore store = GameManager.Instance.Session;
@@ -327,12 +541,12 @@ namespace AIManagerWorkspace
             SetStatus(newStatus);
 
             // Rework: the agent carries the page back to the desk.
-            bool carryBack = newStatus == AgentStatus.Working;
+            bool carryBack = newStatus == AgentStatus.Working && !clearTask;
             if (carryBack) { page.SetVisible(true); avatar.SetCarrying(true); }
             ReturnToDesk(() =>
             {
                 if (carryBack) { page.SetVisible(false); avatar.SetCarrying(false); }
-                atDesk?.Invoke();
+                if (atDesk != null) atDesk(); else TryStartNext();
             });
         }
 
@@ -439,6 +653,7 @@ namespace AIManagerWorkspace
             yield return page.FlyTo(desk.ReviewAnchor);
             desk.Play(ReviewDesk.Sfx.Arrive);
             avatar.SetPose(AgentAvatar.Pose.Standing);
+            avatar.Wave();
             moveRoutine = null;
             onReady?.Invoke();
         }
@@ -506,6 +721,7 @@ namespace AIManagerWorkspace
                 return false;
             }
             nav.enabled = true;
+            nav.speed = AppSettings.Current.WalkSpeedMetres;
             nav.Warp(hit.position);
             return true;
         }

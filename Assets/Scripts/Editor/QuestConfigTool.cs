@@ -39,11 +39,11 @@ namespace AIManagerWorkspace
         private static string DeviceDir => $"/sdcard/Android/data/{PackageId}/files";
         private static string LegacyConfig => Path.Combine(Application.dataPath, "StreamingAssets", "config.json");
 
-        [MenuItem("Tools/AI Manager/Quest API Key")]
+        [MenuItem("Tools/AI Manager/Quest API Key + Agent Bridge")]
         public static void Open()
         {
             var w = GetWindow<QuestConfigTool>(true, "Quest API Key");
-            w.minSize = new Vector2(460, 330);
+            w.minSize = new Vector2(480, 470);
             w.key = ReadKey();
         }
 
@@ -69,6 +69,19 @@ namespace AIManagerWorkspace
             if (GUILayout.Button("Check headset connection")) RunCheck();
 
             EditorGUILayout.Space();
+            EditorGUILayout.LabelField("Agent bridge (real agents on this PC)", EditorStyles.boldLabel);
+            EditorGUILayout.HelpBox(
+                "Bridge/aim_bridge.py connects Claude Code sessions, scripts and MCP clients to the desks in VR. " +
+                "Over USB the headset reaches it at 127.0.0.1:8787 through adb reverse (done after every build).",
+                MessageType.None);
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                if (GUILayout.Button("Start bridge", GUILayout.Height(26))) StartBridge();
+                if (GUILayout.Button("Connect headset (USB)", GUILayout.Height(26))) RunReverse();
+                if (GUILayout.Button("Open dashboard", GUILayout.Height(26))) Application.OpenURL("http://127.0.0.1:8787");
+            }
+
+            EditorGUILayout.Space();
             scroll = EditorGUILayout.BeginScrollView(scroll);
             EditorGUILayout.HelpBox(log.Length > 0 ? log.TrimEnd() :
                 "Connect the Quest with a USB cable and allow USB debugging in the headset.", MessageType.None);
@@ -92,7 +105,61 @@ namespace AIManagerWorkspace
         {
             string path = AIServiceManager.ConfigPath;
             Directory.CreateDirectory(Path.GetDirectoryName(path));
-            File.WriteAllText(path, ConfigJson(apiKey));
+            AIServiceManager.ConfigData existing = null;
+            try { if (File.Exists(path)) existing = JsonUtility.FromJson<AIServiceManager.ConfigData>(File.ReadAllText(path)); }
+            catch { /* rewrite below */ }
+            File.WriteAllText(path, JsonUtility.ToJson(WithClaudeKey(existing, apiKey), true));
+        }
+
+        /// <summary>Sets the Claude key on a config, keeping other providers, the default brain and the bridge settings.</summary>
+        private static AIServiceManager.ConfigData WithClaudeKey(AIServiceManager.ConfigData existing, string apiKey)
+        {
+            var data = existing ?? new AIServiceManager.ConfigData();
+            apiKey = (apiKey ?? "").Trim();
+            data.apiKey = apiKey;
+            data.model = AIServiceManager.DefaultModel;
+            var list = new System.Collections.Generic.List<AIServiceManager.Backend>(data.backends ?? new AIServiceManager.Backend[0]);
+            var claude = list.Find(b => b != null && b.id == "anthropic");
+            if (claude == null) { claude = new AIServiceManager.Backend { id = "anthropic", model = AIServiceManager.DefaultModel }; list.Add(claude); }
+            claude.apiKey = apiKey;
+            data.backends = list.ToArray();
+            if (string.IsNullOrEmpty(data.defaultBackend)) data.defaultBackend = AIServiceManager.Simulation;
+            return data;
+        }
+
+        // ── Bridge ────────────────────────────────────────────────────────────
+
+        private static string BridgeDir => Path.GetFullPath(Path.Combine(Application.dataPath, "..", "Bridge"));
+
+        private void StartBridge()
+        {
+            string script = Path.Combine(BridgeDir, "aim_bridge.py");
+            try
+            {
+                // Its own console window, so it keeps running and you can see what it does.
+                var psi = Application.platform == RuntimePlatform.WindowsEditor
+                    ? new ProcessStartInfo("cmd.exe", $"/k python \"{script}\"") { UseShellExecute = true, WorkingDirectory = BridgeDir }
+                    : new ProcessStartInfo("python3", $"\"{script}\"") { UseShellExecute = true, WorkingDirectory = BridgeDir };
+                Process.Start(psi);
+                Append("Bridge starting in its own window. Dashboard: http://127.0.0.1:8787");
+            }
+            catch (Exception e) { Append($"Could not start the bridge ({e.Message}). Run: python Bridge/aim_bridge.py"); }
+        }
+
+        private async void RunReverse()
+        {
+            _ = AdbPath;
+            Append(await Task.Run(() => Reverse(null)));
+        }
+
+        /// <summary>adb reverse: the headset's 127.0.0.1:8787 reaches this PC's bridge over the USB cable.</summary>
+        private static string Reverse(string onlyDevice)
+        {
+            string err = null;
+            string device = onlyDevice ?? Device(out err);
+            if (device == null) return err;
+            string output = Adb($"-s {device} reverse tcp:8787 tcp:8787", out int code);
+            return code == 0 ? $"Headset {device} now reaches the bridge over USB (127.0.0.1:8787)." : $"adb reverse failed: {output.Trim()}";
         }
 
         private static string ConfigJson(string apiKey) =>
@@ -161,7 +228,12 @@ namespace AIManagerWorkspace
             string tmp = Path.Combine(Path.GetTempPath(), $"aimanager_config_{Guid.NewGuid():N}.json");
             try
             {
-                File.WriteAllText(tmp, ConfigJson(apiKey));
+                // Keep what the headset already has (bridge address / token set in VR).
+                AIServiceManager.ConfigData existing = null;
+                string current = Adb($"-s {device} shell cat {deviceDir}/config.json", out int catCode);
+                if (catCode == 0 && current.TrimStart().StartsWith("{"))
+                    try { existing = JsonUtility.FromJson<AIServiceManager.ConfigData>(current); } catch { /* replace */ }
+                File.WriteAllText(tmp, JsonUtility.ToJson(WithClaudeKey(existing, apiKey), true));
                 Adb($"-s {device} shell mkdir -p {deviceDir}", out _);
                 string output = Adb($"-s {device} push \"{tmp}\" {deviceDir}/config.json", out int code);
                 return code == 0
@@ -219,10 +291,11 @@ namespace AIManagerWorkspace
                     RedirectStandardOutput = true, RedirectStandardError = true
                 };
                 using var p = Process.Start(psi);
-                string output = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
-                if (!p.WaitForExit(30000)) { p.Kill(); return "adb timed out"; }
+                var stdout = p.StandardOutput.ReadToEndAsync();
+                var stderr = p.StandardError.ReadToEndAsync();
+                if (!p.WaitForExit(30000)) { try { p.Kill(); } catch { /* gone */ } return "adb timed out"; }
                 exitCode = p.ExitCode;
-                return output;
+                return stdout.Result + stderr.Result;
             }
             catch (Exception e) { return e.Message; }
         }
@@ -243,10 +316,11 @@ namespace AIManagerWorkspace
 
             public void OnPostprocessBuild(BuildReport report)
             {
-                if (report.summary.platform != BuildTarget.Android || !AutoPush) return;
+                if (report.summary.platform != BuildTarget.Android || !AutoPush || AdbPath == null) return;
                 string apiKey = ReadKey();
-                if (string.IsNullOrEmpty(apiKey) || AdbPath == null) return;
-                Debug.Log("[QuestConfig] Will push the API key once the app is on the headset.");
+                bool pushKey = !string.IsNullOrEmpty(apiKey);
+                Debug.Log(pushKey ? "[QuestConfig] Will connect the bridge and push the API key once the app is on the headset."
+                                  : "[QuestConfig] Will connect the agent bridge (adb reverse) once the headset is found.");
                 string package = PackageId, dir = DeviceDir;
                 Task.Run(async () =>
                 {
@@ -256,6 +330,8 @@ namespace AIManagerWorkspace
                         string device = Device(out _);
                         if (device != null)
                         {
+                            Debug.Log($"[QuestConfig] {Reverse(device)}");
+                            if (!pushKey) return;
                             bool installed = Adb($"-s {device} shell pm list packages {package}", out _).Contains(package);
                             Adb($"-s {device} shell ls {dir}", out int code);
                             if (installed && code == 0)

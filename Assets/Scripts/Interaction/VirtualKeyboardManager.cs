@@ -18,6 +18,8 @@ namespace AIManagerWorkspace
         [SerializeField] private GameObject visualRoot;
         [SerializeField] private GameObject keysRoot;
         [SerializeField] private Button useDeskButton;
+        [SerializeField] private Button metaKeyboardButton;
+        [SerializeField] private TextMeshProUGUI hintText;
         [SerializeField] private TextInputService service;
         [SerializeField] private TextMeshProUGUI promptText;
         [SerializeField] private TextMeshProUGUI inputText;
@@ -35,18 +37,20 @@ namespace AIManagerWorkspace
 
         public bool IsOpen => visualRoot != null && visualRoot.activeSelf && !displayOnly;
         public bool IsOpenFor(object o) => IsOpen && ReferenceEquals(owner, o);
+        public string Text => text;
 
         private void Awake()
         {
             foreach (var k in keys) if (k != null) k.Bind(this);
             if (useDeskButton != null) useDeskButton.onClick.AddListener(() => service.SwitchToDesk());
+            if (metaKeyboardButton != null) metaKeyboardButton.onClick.AddListener(() => service.SwitchToSystem());
             if (visualRoot != null) visualRoot.SetActive(false);
         }
 
         private bool masked;
 
         public void Open(string prompt, object requestOwner, bool allowEmptyText, Action<string> submit, Func<bool> valid = null,
-            bool secret = false)
+            bool secret = false, string initialText = "")
         {
             masked = secret;
             owner = requestOwner;
@@ -54,8 +58,8 @@ namespace AIManagerWorkspace
             onSubmit = submit;
             stillValid = valid;
             displayOnly = false;
-            text = "";
-            shift = true;
+            text = initialText ?? "";
+            shift = text.Length == 0;
             Show(prompt, true);
             RefreshKeys();
             RefreshText();
@@ -89,6 +93,11 @@ namespace AIManagerWorkspace
             if (promptText != null) promptText.text = prompt;
             if (keysRoot != null) keysRoot.SetActive(withKeys);
             if (useDeskButton != null) useDeskButton.gameObject.SetActive(!withKeys);
+            if (metaKeyboardButton != null) metaKeyboardButton.gameObject.SetActive(withKeys && TextInputService.SystemKeyboardAvailable);
+            if (hintText != null)
+                hintText.text = withKeys
+                    ? "<color=#4FD1C5>Thumbs up</color> sends   ·   <color=#F07272>palm</color> closes"
+                    : "Hands pause while the Meta keyboard is open";
             if (visualRoot != null) visualRoot.SetActive(true);
         }
 

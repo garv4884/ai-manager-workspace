@@ -30,6 +30,7 @@ namespace AIManagerWorkspace
             agent = owner;
             baseScale = transform.localScale;
             agent.Changed += _ => Refresh();
+            agent.ProgressChanged += _ => Refresh();
             if (accentBar != null) accentBar.color = agent.Data.accentColor;
             Refresh();
         }
@@ -39,16 +40,18 @@ namespace AIManagerWorkspace
             if (agent == null) return;
             AgentData d = agent.Data;
             if (nameText != null) nameText.text = d.agentName;
-            if (roleText != null) roleText.text = d.agentRole;
+            if (roleText != null) roleText.text = d.IsLinked ? $"<color=#4FD1C5>LIVE</color> · {d.linkedKind}" : d.agentRole;
             if (statusText != null) statusText.text = d.StatusLabel;
             if (pill != null) pill.color = d.StatusColor;
 
             if (detailText != null)
             {
-                TaskData t = agent.CurrentTask;
                 string detail = d.ActivityLabel;
-                if (d.status == AgentStatus.Working && t != null && d.activity == AgentActivity.AtDesk)
-                    detail = $"{Mathf.RoundToInt(t.progress * 100f)}%  {t.title}";
+                if (d.status == AgentStatus.Working && d.activity == AgentActivity.AtDesk && !string.IsNullOrEmpty(agent.WorkTitle))
+                {
+                    float p = agent.WorkProgress;
+                    detail = (p >= 0f ? $"{Mathf.RoundToInt(p * 100f)}%  " : "") + agent.WorkTitle;
+                }
                 detailText.text = detail;
             }
         }

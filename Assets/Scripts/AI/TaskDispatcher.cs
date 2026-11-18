@@ -11,10 +11,10 @@ namespace AIManagerWorkspace
     public class TaskDispatcher : MonoBehaviour
     {
         [SerializeField] private bool autoDispatch = true;
-        [SerializeField] private Vector2 intervalSeconds = new Vector2(6f, 12f);
+        [SerializeField] private Vector2 intervalSeconds = new Vector2(10f, 18f);
         [SerializeField] private float firstTaskDelay = 2f;
         [Tooltip("Demo mode pauses while this many agents are already waiting for the manager.")]
-        [SerializeField] private int maxPendingReviews = 4;
+        [SerializeField] private int maxPendingReviews = 3;
 
         private float nextTime;
         private readonly List<AgentController> candidates = new List<AgentController>();
@@ -36,7 +36,7 @@ namespace AIManagerWorkspace
             if (gm.Queue.PendingCount >= maxPendingReviews || gm.Agents.MeetingActive) return;
 
             candidates.Clear();
-            foreach (var a in gm.Agents.Agents) if (a.CanTakeTask) candidates.Add(a);
+            foreach (var a in gm.Agents.Agents) if (a.CanTakeTask && !a.Data.IsLinked) candidates.Add(a);
             if (candidates.Count == 0) return;
 
             candidates[Random.Range(0, candidates.Count)].AssignTask(TaskLibrary.CreateRandomTask());

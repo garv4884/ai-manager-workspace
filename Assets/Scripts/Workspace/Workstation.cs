@@ -21,6 +21,8 @@ namespace AIManagerWorkspace
         private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
         private MaterialPropertyBlock block;
         private float phase;
+        private int lastPct = -2;
+        private string lastTitle;
 
         private void Awake() => phase = Random.Range(0f, 6.28f);
 
@@ -32,6 +34,7 @@ namespace AIManagerWorkspace
         {
             Owner = agent;
             if (nameplate != null) nameplate.text = agent != null ? agent.Data.agentName.ToUpperInvariant() : "";
+            if (agent == null) return;
 
             if (agent != null && chairRenderers != null)
             {
@@ -70,9 +73,15 @@ namespace AIManagerWorkspace
             if (screenText != null)
             {
                 TaskData task = Owner.CurrentTask;
-                screenText.text = status == AgentStatus.Working && task != null
-                    ? $"{task.title}\n{Mathf.RoundToInt(task.progress * 100f)}%"
-                    : "";
+                float progress = Owner.WorkProgress;
+                int pct = progress >= 0f ? Mathf.RoundToInt(progress * 100f) : -1;
+                string title = status == AgentStatus.Working ? Owner.WorkTitle ?? "" : "";
+                if (pct != lastPct || title != lastTitle)
+                {
+                    lastPct = pct;
+                    lastTitle = title;
+                    screenText.text = title.Length > 0 ? title + (pct >= 0 ? $"\n{pct}%" : "") : "";
+                }
             }
         }
     }

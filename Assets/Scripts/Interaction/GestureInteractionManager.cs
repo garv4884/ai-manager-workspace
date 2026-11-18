@@ -5,6 +5,11 @@ namespace AIManagerWorkspace
     /// <summary>
     /// Routes gestures to whichever action fits the current request: thumbs up never "approves"
     /// a question, it lets the agent decide; thumbs down only works where changes can be asked for.
+    ///
+    /// Gestures keep working while the desk keyboard is open:
+    ///   thumbs up   -> send what you typed (or, with nothing typed, the presenter's primary action)
+    ///   thumbs down -> ask the presenter for changes
+    ///   palm push   -> close the keyboard (never drops a task while you are typing)
     /// </summary>
     public class GestureInteractionManager : MonoBehaviour
     {
@@ -27,10 +32,33 @@ namespace AIManagerWorkspace
             recognizer.OnPalmPush.RemoveListener(Dismiss);
         }
 
-        private static bool Typing => GameManager.Instance.Keyboard.IsOpen;
+        private static GameManager GM => GameManager.Instance;
 
-        private void Primary() { if (!Typing) GameManager.Instance.PerformPrimary(); }
-        private void Rework() { if (!Typing) GameManager.Instance.PerformRework(); }
-        private void Dismiss() { if (!Typing) GameManager.Instance.PerformDismiss(); }
+        private static void Primary()
+        {
+            TextInputService kb = GM.Keyboard;
+            if (kb.IsOpen)
+            {
+                if (kb.SubmitCurrent()) return;
+                // Nothing typed: only act if the keyboard belongs to the presenter (e.g. "you decide").
+                if (GM.Presenter != null && kb.IsOpenFor(GM.Presenter)) GM.PerformPrimary();
+                return;
+            }
+            GM.PerformPrimary();
+        }
+
+        private static void Rework()
+        {
+            TextInputService kb = GM.Keyboard;
+            if (kb.IsOpen && !(GM.Presenter != null && kb.IsOpenFor(GM.Presenter))) return;
+            GM.PerformRework();
+        }
+
+        private static void Dismiss()
+        {
+            TextInputService kb = GM.Keyboard;
+            if (kb.IsOpen) { kb.Close(); return; }
+            GM.PerformDismiss();
+        }
     }
 }

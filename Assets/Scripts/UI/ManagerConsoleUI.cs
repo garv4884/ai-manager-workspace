@@ -19,6 +19,8 @@ namespace AIManagerWorkspace
         [SerializeField] private Image gestureFill;
         [SerializeField] private TextMeshProUGUI gestureLabel;
         [SerializeField] private HandGestureRecognizer gestures;
+        [SerializeField] private Button scrollUp;
+        [SerializeField] private Button scrollDown;
 
         private readonly List<ManagerAction> current = new List<ManagerAction>();
 
@@ -33,6 +35,8 @@ namespace AIManagerWorkspace
                 });
             }
             GameManager gm = GameManager.Instance;
+            if (scrollUp != null) scrollUp.onClick.AddListener(() => { if (gm.Presenter != null) gm.Presenter.Page.Scroll(-140f); });
+            if (scrollDown != null) scrollDown.onClick.AddListener(() => { if (gm.Presenter != null) gm.Presenter.Page.Scroll(140f); });
             gm.Queue.Changed += Refresh;
             gm.Agents.AnyAgentChanged += Refresh;
             Refresh();
@@ -49,15 +53,19 @@ namespace AIManagerWorkspace
                 headline.text = q.Presenter != null ? $"{q.Presenter.Data.agentName} is on the way up..."
                     : q.Hold ? "<color=#FFB347>Queue on hold</color>" : "All clear";
                 subline.text = q.Hold
-                    ? (q.Waiting.Count > 0 ? $"{q.Waiting.Count} waiting: resume to review" : "Nobody comes up until you resume")
-                    : q.Waiting.Count > 0 ? $"{q.Waiting.Count} waiting in line" : "No one is waiting for you";
+                    ? (q.WaitingTotal > 0 ? $"{q.WaitingTotal} waiting" : "Nobody comes up until you resume")
+                    : q.WaitingTotal > 0 ? $"{q.WaitingTotal} waiting for you" : "No one is waiting for you";
             }
             else
             {
                 AgentData d = p.Data;
                 headline.text = $"<color=#{ColorUtility.ToHtmlStringRGB(d.StatusColor)}>{d.StatusLabel}</color>  {d.agentName}";
-                subline.text = q.Waiting.Count > 0 ? $"{q.Waiting.Count} more in line" : "Last in line";
+                subline.text = q.WaitingTotal > 0 ? $"{q.WaitingTotal} more waiting" : "Last one";
             }
+
+            bool scrollable = p != null && p.Page.CanScroll;
+            if (scrollUp != null) scrollUp.gameObject.SetActive(scrollable);
+            if (scrollDown != null) scrollDown.gameObject.SetActive(scrollable);
 
             current.Clear();
             current.AddRange(gm.CurrentActions());

@@ -42,7 +42,7 @@ namespace AIManagerWorkspace
         private static readonly Vector3 LiftCenter = new Vector3(0f, 0f, 2.95f);
         private static readonly Vector3 QueueStart = new Vector3(0f, 0f, 4.2f);
         private static readonly Vector3 ManagerStand = new Vector3(0f, PlatformHeight, 0.5f);
-        private const int WorkstationCount = 6;
+        private const int WorkstationCount = 10;   // team can grow to 10; unused desks stay packed away
 
         [MenuItem("Tools/AI Manager/Build Main Scene")]
         public static async void BuildMainSceneMenu() => await BuildMainScene();
@@ -70,7 +70,7 @@ namespace AIManagerWorkspace
             var queueStart = BuildQueueLane();
             var deskParts = BuildPlatform(platform);
             var workstations = BuildWorkstations(desksRoot);
-            BuildLighting();
+            var sun = BuildLighting();
 
             MarkStatic(shell.gameObject);
             MarkStatic(decor.gameObject);
@@ -91,6 +91,14 @@ namespace AIManagerWorkspace
             await MetaSetup.InstallBlock(MetaSetup.PassthroughBlock);
             var cameraRig = Object.FindAnyObjectByType<OVRCameraRig>();
             cameraRig.transform.SetPositionAndRotation(ManagerStand, Quaternion.identity);
+            // Passthrough runs as an underlay: Meta requires the eye camera to clear to transparent black.
+            // The office shell encloses the view, so this changes nothing visible in the virtual office.
+            foreach (var cam in cameraRig.GetComponentsInChildren<Camera>(true))
+            {
+                cam.clearFlags = CameraClearFlags.SolidColor;
+                cam.backgroundColor = new Color(0f, 0f, 0f, 0f);
+                EditorUtility.SetDirty(cam);
+            }
             var ovrManager = cameraRig.GetComponent<OVRManager>();
             if (ovrManager != null) ovrManager.isInsightPassthroughEnabled = true;
             var ptLayer = Object.FindAnyObjectByType<OVRPassthroughLayer>();
@@ -112,21 +120,30 @@ namespace AIManagerWorkspace
             var textInput = gmGO.AddComponent<TextInputService>();
             var station = gmGO.AddComponent<ManagerStation>();
             var session = gmGO.AddComponent<SessionStore>();
+            var bridge = gmGO.AddComponent<AgentBridgeClient>();
+            var uiFeedback = gmGO.AddComponent<UiFeedback>();
+            var inputMode = gmGO.AddComponent<InputModeManager>();
+            var room = gmGO.AddComponent<RoomEnvironment>();
+            BuildUiKitAssets(gmGO);
 
             var reviewDesk = deskParts.desk;
             var deskRoot = deskParts.root;
             var keyboard = BuildKeyboard(deskRoot, reviewDesk, textInput);
+            var settingsCanvas = BuildSettingsWindow(deskRoot, passthrough, out var settingsWindow);
+            var tutorialCanvas = BuildTutorial(deskRoot, out var tutorial);
             var canvases = new List<Canvas>
             {
                 keyboard.GetComponentInChildren<Canvas>(true),
                 BuildConsole(deskRoot, recognizer),
-                BuildLayoutPanel(deskRoot, passthrough),
+                BuildLayoutPanel(deskRoot, passthrough, settingsWindow),
                 BuildDetailPanel(deskRoot),
+                settingsCanvas,
+                tutorialCanvas,
             };
             var handMenu = BuildHandMenu(passthrough);
 
             // Done tray: point and pinch to open the work history on the workspace panel.
-            var settingsUI = Object.FindAnyObjectByType<SettingsPanelUI>(FindObjectsInactive.Include);
+
             var trayHit = new GameObject("TrayClick");
             trayHit.transform.SetParent(deskParts.tray.transform, false);
             var trayCol = trayHit.AddComponent<BoxCollider>();
@@ -135,10 +152,12 @@ namespace AIManagerWorkspace
             AddRayTarget(trayHit, trayCol);
             var trayClick = trayHit.AddComponent<RayClickTarget>();
             Wire(trayClick, "highlight", deskParts.tray.transform);
-            UnityEditor.Events.UnityEventTools.AddPersistentListener(trayClick.OnClick, settingsUI.ShowHistory);
+            UnityEditor.Events.UnityEventTools.AddPersistentListener(trayClick.OnClick, settingsWindow.OpenHistory);
             BuildTeamBoard(shell.parent);
 
             // Ray + poke on every interactive canvas (Interaction SDK quick actions).
+            canvases.AddRange(WindowBars);
+            WindowBars.Clear();
             foreach (var c in canvases.Append(handMenu))
             {
                 bool wasActive = c.gameObject.activeSelf;
@@ -147,6 +166,7 @@ namespace AIManagerWorkspace
                 MetaSetup.RunWizard("Oculus.Interaction.Editor.QuickActions.PokeCanvasWizard", c.gameObject);
                 c.gameObject.SetActive(wasActive);
             }
+            RestrictToHand(handMenu.transform.root.gameObject, Oculus.Interaction.Input.Handedness.Right);
 
             // Teleport anywhere walkable (floor, platform, stairs) with hands or controllers.
             var teleport = new GameObject("TeleportArea");
@@ -163,6 +183,15 @@ namespace AIManagerWorkspace
             Wire(gm, "keyboard", textInput);
             Wire(gm, "station", station);
             Wire(gm, "session", session);
+            Wire(gm, "bridge", bridge);
+            Wire(uiFeedback, "desk", deskParts.desk);
+            Wire(inputMode, "rigRoot", cameraRig.transform);
+            BuildControllerNotice(inputMode);
+            WireArray(room, "roots", new Object[] { shell, decor, meetingWalls, desksRoot });
+            Wire(room, "sun", sun);
+            Wire(tutorial, "handMenu", handMenu.GetComponentInParent<HandMenu>(true));
+            Wire(tutorial, "gestures", recognizer);
+            BuildGestureRing(recognizer);
             Wire(textInput, "deskKeyboard", keyboard);
 
             Wire(station, "deskAssembly", deskRoot);
@@ -192,6 +221,28 @@ namespace AIManagerWorkspace
             EditorBuildSettings.scenes = scenes.ToArray();
             AssetDatabase.SaveAssets();
             Debug.Log("[SceneBuilder] AI Manager Workspace scene built and saved.");
+        }
+
+        /// <summary>Adds a HandednessFilter to every Interaction SDK interactable under root (e.g. wrist menu: right hand only).</summary>
+        private static void RestrictToHand(GameObject root, Oculus.Interaction.Input.Handedness hand)
+        {
+            var filter = root.AddComponent<HandednessFilter>();
+            var fso = new SerializedObject(filter);
+            fso.FindProperty("allowed").enumValueIndex = (int)hand;
+            fso.ApplyModifiedPropertiesWithoutUndo();
+            int n = 0;
+            foreach (var mb in root.GetComponentsInChildren<MonoBehaviour>(true))
+            {
+                if (mb == null) continue;
+                var so = new SerializedObject(mb);
+                var list = so.FindProperty("_interactorFilters");
+                if (list == null || !list.isArray) continue;
+                list.arraySize++;
+                list.GetArrayElementAtIndex(list.arraySize - 1).objectReferenceValue = filter;
+                so.ApplyModifiedPropertiesWithoutUndo();
+                n++;
+            }
+            Debug.Log($"[SceneBuilder] {root.name}: {n} interactables accept the {hand} hand only.");
         }
 
         /// <summary>Makes a collider pointable by the Interaction SDK hand/controller rays.</summary>
@@ -361,16 +412,31 @@ namespace AIManagerWorkspace
             // Review desk: a slim slab on one narrow column so the view of the floor stays open.
             // Everything on the desk lives under DeskAssembly, which "Fit desk to me" moves up and down.
             var deskRoot = Empty("DeskAssembly", platform, Vector3.zero).transform;
-            Box("DeskTop", deskRoot, new Vector3(0f, DeskTopY - 0.02f, 1.3f), new Vector3(1.4f, 0.04f, 0.62f), walnut);
-            Box("DeskColumn", deskRoot, new Vector3(0f, DeskTopY - 0.6f, 1.25f), new Vector3(0.36f, 1.15f, 0.22f), plinth, false);
-            Box("DeskFrontGlow", deskRoot, new Vector3(0f, DeskTopY - 0.035f, 1.61f), new Vector3(1.38f, 0.015f, 0.015f), glow, false);
-            foreach (int side in new[] { -1, 1 })
+            // Curved glass desk: a half ring around the manager, edge-lit, on slim chrome legs.
+            Material deskGlass = Glass("Glass_Desk", new Color(0.72f, 0.84f, 0.9f), 0.34f);
+            Material frost = Glass("Glass_Frost", new Color(0.86f, 0.92f, 0.96f), 0.13f);
+            // Draw the glass before UI (queue 3000), so panels, keyboard and pages lying on it always show on top.
+            deskGlass.renderQueue = 2950;
+            frost.renderQueue = 2940;
+            EditorUtility.SetDirty(deskGlass);
+            EditorUtility.SetDirty(frost);
+            Material chrome = Mat("Desk_Chrome", new Color(0.78f, 0.8f, 0.83f), 0.88f, 0.9f);
+            Vector3 ring = new Vector3(0f, DeskTopY - 0.016f, 0.45f);
+            const float inner = 0.58f, outer = 1.2f, from = -100f, to = 100f;
+            var deskTop = Arc("DeskTop", deskRoot, ring, inner, outer, from, to, 0.026f, deskGlass);
+            NoShadows(deskTop);
+            NoShadows(Arc("EdgeGlow", deskRoot, ring + Vector3.down * 0.004f, outer - 0.004f, outer + 0.008f, from, to, 0.02f, glow, false));
+            NoShadows(Arc("InnerTrim", deskRoot, ring, inner - 0.012f, inner + 0.004f, from, to, 0.03f, chrome, false));
+            NoShadows(Arc("Modesty", deskRoot, ring + Vector3.down * 0.3f, outer - 0.03f, outer - 0.02f, from + 6f, to - 6f, 0.52f, frost, false));
+            float legBottom = PlatformHeight - 0.45f, legTop = DeskTopY - 0.03f;   // runs into the plinth, so the desk can rise
+            foreach (float deg in new[] { -88f, -44f, 0f, 44f, 88f })
             {
-                float yaw = 35f * side;
-                Vector3 wingPos = new Vector3(side * (0.7f + 0.38f * Mathf.Cos(35f * Mathf.Deg2Rad)), DeskTopY - 0.02f,
-                    1.3f - 0.38f * Mathf.Sin(35f * Mathf.Deg2Rad));
-                Box(side < 0 ? "WingLeft" : "WingRight", deskRoot, wingPos, new Vector3(0.78f, 0.04f, 0.56f), walnut, true, new Vector3(0f, yaw, 0f));
+                float rad = deg * Mathf.Deg2Rad;
+                Vector3 p = ring + new Vector3(Mathf.Sin(rad), 0f, Mathf.Cos(rad)) * (outer - 0.09f);
+                Cyl("Leg", deskRoot, new Vector3(p.x, (legBottom + legTop) * 0.5f, p.z), 0.018f, legTop - legBottom, chrome, false);
             }
+
+            BuildDeskObjects(deskRoot);
 
             // Done tray (approved pages stack up here).
             var tray = Box("DoneTray", deskRoot, new Vector3(0.5f, DeskTopY + 0.01f, 1.45f), new Vector3(0.28f, 0.02f, 0.34f), plinth, false);
@@ -472,10 +538,7 @@ namespace AIManagerWorkspace
                 Box("Keyboard", root, new Vector3(0f, 0.765f, -0.12f), new Vector3(0.42f, 0.015f, 0.14f), charcoal, false);
                 Cyl("Mug", root, new Vector3(0.5f, 0.81f, -0.08f), 0.04f, 0.1f, mug, false);
 
-                Cyl("ChairBase", root, new Vector3(0f, 0.03f, -0.62f), 0.28f, 0.04f, charcoal, false);
-                Cyl("ChairPost", root, new Vector3(0f, 0.24f, -0.62f), 0.035f, 0.38f, charcoal, false);
-                var seat = Box("ChairSeat", root, new Vector3(0f, 0.44f, -0.62f), new Vector3(0.5f, 0.08f, 0.48f), chair, false);
-                var back = Box("ChairBack", root, new Vector3(0f, 0.78f, -0.88f), new Vector3(0.48f, 0.55f, 0.06f), chair, false, new Vector3(-8f, 0f, 0f));
+                var cushions = BuildChair(root, new Vector3(0f, 0f, -0.62f), Quaternion.identity, chair, charcoal);
 
                 var plateCanvas = WorldCanvas("Nameplate", root, new Vector3(0f, 0.6f, 0.345f), new Vector3(0f, 180f, 0f), new Vector2(1000f, 160f), 0.001f);
                 var plate = Text("Name", plateCanvas.transform, "AGENT", 110f, new Color(0.95f, 0.95f, 0.95f), Vector2.zero, new Vector2(1000f, 160f), TextAlignmentOptions.Center, true);
@@ -489,7 +552,7 @@ namespace AIManagerWorkspace
                 Wire(ws, "approachPoint", approach.transform);
                 Wire(ws, "screen", scr.GetComponent<Renderer>());
                 Wire(ws, "statusBar", statusBar.GetComponent<Renderer>());
-                WireArray(ws, "chairRenderers", new Object[] { seat.GetComponent<Renderer>(), back.GetComponent<Renderer>() });
+                WireArray(ws, "chairRenderers", cushions.Cast<Object>().ToArray());
                 Wire(ws, "nameplate", plate);
 
                 var obstacle = root.gameObject.AddComponent<NavMeshObstacle>();
@@ -508,6 +571,36 @@ namespace AIManagerWorkspace
                 list.Add(ws);
             }
             return list;
+        }
+
+        /// <summary>
+        /// Task chair: five-star base with casters, gas lift, cushioned seat, curved back and armrests.
+        /// Origin on the floor under the seat centre; the sitter faces +Z. Returns the cushion renderers (tinted per agent).
+        /// </summary>
+        private static Renderer[] BuildChair(Transform parent, Vector3 localPos, Quaternion localRot, Material fabric, Material frame)
+        {
+            var root = Empty("Chair", parent, localPos).transform;
+            root.localRotation = localRot;
+            for (int i = 0; i < 5; i++)
+            {
+                float a = i * 72f;
+                Vector3 dir = Quaternion.Euler(0f, a, 0f) * Vector3.forward;
+                Box($"Leg_{i}", root, dir * 0.15f + Vector3.up * 0.06f, new Vector3(0.04f, 0.03f, 0.3f), frame, false, new Vector3(0f, a, 0f));
+                Ball($"Caster_{i}", root, dir * 0.29f + Vector3.up * 0.03f, Vector3.one * 0.05f, frame);
+            }
+            Cyl("GasLift", root, new Vector3(0f, 0.24f, 0f), 0.025f, 0.34f, frame, false);
+            Cyl("SeatPlate", root, new Vector3(0f, 0.41f, 0f), 0.16f, 0.03f, frame, false);
+            var seat = Ball("Seat", root, new Vector3(0f, 0.45f, 0.01f), new Vector3(0.5f, 0.09f, 0.48f), fabric);
+            Box("Spine", root, new Vector3(0f, 0.55f, -0.25f), new Vector3(0.05f, 0.2f, 0.03f), frame, false, new Vector3(-8f, 0f, 0f));
+            var back = Ball("Back", root, new Vector3(0f, 0.8f, -0.27f), new Vector3(0.46f, 0.5f, 0.09f), fabric);
+            back.transform.localRotation = Quaternion.Euler(-10f, 0f, 0f);
+            foreach (int side in new[] { -1, 1 })
+            {
+                Box(side < 0 ? "ArmPostL" : "ArmPostR", root, new Vector3(side * 0.23f, 0.53f, -0.02f), new Vector3(0.03f, 0.16f, 0.03f), frame, false);
+                Box(side < 0 ? "ArmPadL" : "ArmPadR", root, new Vector3(side * 0.23f, 0.62f, 0.0f), new Vector3(0.06f, 0.025f, 0.24f), frame, false);
+            }
+            NoShadows(root.gameObject);
+            return new[] { seat.GetComponent<Renderer>(), back.GetComponent<Renderer>() };
         }
 
         // ══ Discussion room ══════════════════════════════════════════════════
@@ -550,9 +643,7 @@ namespace AIManagerWorkspace
                 Quaternion face = Quaternion.LookRotation(-p.normalized);
                 var seatRoot = Empty($"Seat_{i}", room, p).transform;
                 seatRoot.localRotation = face;
-                Box("ChairSeat", seatRoot, new Vector3(0f, 0.44f, 0f), new Vector3(0.5f, 0.08f, 0.48f), chair, false);
-                Box("ChairBack", seatRoot, new Vector3(0f, 0.78f, -0.26f), new Vector3(0.48f, 0.55f, 0.06f), chair, false);
-                Cyl("ChairPost", seatRoot, new Vector3(0f, 0.22f, 0f), 0.035f, 0.4f, frame, false);
+                BuildChair(seatRoot, Vector3.zero, Quaternion.identity, chair, frame);
                 seats.Add(seatRoot);
             }
 
@@ -563,7 +654,7 @@ namespace AIManagerWorkspace
 
         // ══ Lighting ═════════════════════════════════════════════════════════
 
-        private static void BuildLighting()
+        private static Light BuildLighting()
         {
             var sun = new GameObject("Sun").AddComponent<Light>();
             sun.type = LightType.Directional;
@@ -579,6 +670,7 @@ namespace AIManagerWorkspace
             RenderSettings.ambientGroundColor = new Color(0.70f, 0.66f, 0.62f);
             RenderSettings.sun = sun;
             RenderSettings.fog = false;
+            return sun;
         }
 
         // ══ Desk UI ══════════════════════════════════════════════════════════
@@ -589,7 +681,9 @@ namespace AIManagerWorkspace
             var canvas = WorldCanvas("KeyboardCanvas", root, Vector3.zero, Vector3.zero, new Vector2(680f, 420f), 0.001f);
             Transform t = canvas.transform;
             Panel("Backplate", t, Vector2.zero, new Vector2(680f, 420f), new Color(0.07f, 0.08f, 0.1f, 0.96f));
-            var prompt = Text("Prompt", t, "", 19f, Palette.Teal, new Vector2(0f, 186f), new Vector2(640f, 36f), TextAlignmentOptions.Left, true);
+            var prompt = Text("Prompt", t, "", 19f, Palette.Teal, new Vector2(-90f, 186f), new Vector2(460f, 36f), TextAlignmentOptions.Left, true);
+            var metaKb = Button("MetaKeyboard", t, "META KEYBOARD", new Vector2(240f, 186f), new Vector2(160f, 36f), Palette.UiBlue, out _, 14f);
+            var hint = Text("Hint", t, "", 14f, Palette.UiMuted, new Vector2(0f, 107f), new Vector2(640f, 20f), TextAlignmentOptions.Center);
             prompt.enableAutoSizing = true; prompt.fontSizeMin = 13f; prompt.fontSizeMax = 19f;
             Panel("InputBox", t, new Vector2(0f, 140f), new Vector2(640f, 52f), new Color(0.15f, 0.17f, 0.21f));
             var input = Text("Input", t, "", 22f, Palette.UiText, new Vector2(0f, 140f), new Vector2(620f, 48f), TextAlignmentOptions.Left);
@@ -618,6 +712,8 @@ namespace AIManagerWorkspace
             Wire(kb, "visualRoot", canvas.gameObject);
             Wire(kb, "keysRoot", keysRoot.gameObject);
             Wire(kb, "useDeskButton", useDesk);
+            Wire(kb, "metaKeyboardButton", metaKb);
+            Wire(kb, "hintText", hint);
             Wire(kb, "service", service);
             Wire(kb, "promptText", prompt);
             Wire(kb, "inputText", input);
@@ -641,9 +737,13 @@ namespace AIManagerWorkspace
 
         private static Canvas BuildConsole(Transform deskRoot, HandGestureRecognizer recognizer)
         {
-            var canvas = WorldCanvas("ReviewConsole", deskRoot, new Vector3(0f, DeskTopY + 0.075f, 1.56f), new Vector3(28f, 0f, 0f), new Vector2(640f, 170f), 0.001f);
+            var canvas = WorldCanvas("ReviewConsole", deskRoot, new Vector3(0f, DeskTopY + 0.075f, 1.56f), new Vector3(28f, 0f, 0f), new Vector2(740f, 170f), 0.001f);
             Transform t = canvas.transform;
-            Panel("Background", t, Vector2.zero, new Vector2(640f, 170f), Palette.UiPanel);
+            Panel("Background", t, Vector2.zero, new Vector2(740f, 170f), Palette.UiPanel);
+            var scrollUp = Button("ScrollUp", t, "", new Vector2(330f, 20f), new Vector2(56f, 48f), Palette.UiButton, out _);
+            Icon("Up", scrollUp.transform, "Icons/chevron-right", Vector2.zero, 24f, Color.white).rectTransform.localRotation = Quaternion.Euler(0f, 0f, 90f);
+            var scrollDown = Button("ScrollDown", t, "", new Vector2(330f, -32f), new Vector2(56f, 48f), Palette.UiButton, out _);
+            Icon("Down", scrollDown.transform, "Icons/chevron-right", Vector2.zero, 24f, Color.white).rectTransform.localRotation = Quaternion.Euler(0f, 0f, -90f);
             var headline = Text("Headline", t, "All clear", 26f, Palette.UiText, new Vector2(-90f, 56f), new Vector2(440f, 40f), TextAlignmentOptions.Left, true);
             var subline = Text("Subline", t, "", 18f, Palette.UiMuted, new Vector2(200f, 56f), new Vector2(220f, 40f), TextAlignmentOptions.Right);
 
@@ -659,6 +759,7 @@ namespace AIManagerWorkspace
 
             Panel("GestureTrack", t, new Vector2(0f, -58f), new Vector2(600f, 10f), new Color(0.2f, 0.22f, 0.26f));
             var fill = Panel("GestureFill", t, new Vector2(0f, -58f), new Vector2(600f, 10f), Palette.Teal, false);
+            fill.sprite = Rounded;   // Filled images need a sprite, or the bar always draws full
             fill.type = Image.Type.Filled;
             fill.fillMethod = Image.FillMethod.Horizontal;
             fill.fillAmount = 0f;
@@ -672,75 +773,59 @@ namespace AIManagerWorkspace
             Wire(ui, "gestureFill", fill);
             Wire(ui, "gestureLabel", gestureLabel);
             Wire(ui, "gestures", recognizer);
+            Wire(ui, "scrollUp", scrollUp);
+            Wire(ui, "scrollDown", scrollDown);
             return canvas;
         }
 
-        private static Canvas BuildLayoutPanel(Transform deskRoot, PassthroughToggle passthrough)
+        private static Canvas BuildLayoutPanel(Transform deskRoot, PassthroughToggle passthrough, SettingsWindow settings)
         {
-            var canvas = WorldCanvas("WorkspacePanel", deskRoot, new Vector3(-0.86f, DeskTopY + 0.3f, 1.06f), new Vector3(24f, -46f, 0f), new Vector2(480f, 560f), 0.001f);
+            var monitor = Monitor("WorkspaceMonitor", deskRoot, new Vector3(-0.84f, DeskTopY + 0.4f, 1.1f), new Vector3(6f, -34f, 0f));
+            var canvas = WorldCanvas("WorkspacePanel", monitor, Vector3.zero, Vector3.zero, new Vector2(480f, 560f), 0.001f);
+            Bezel(canvas);
+            AddWindowChrome(monitor.gameObject, canvas, "workspace", "Workspace", -0.335f, false, true);
             Panel("Background", canvas.transform, Vector2.zero, new Vector2(480f, 560f), Palette.UiPanel);
             Transform t = View("MainView", canvas.transform);
             Text("Title", t, "WORKSPACE", 22f, Palette.Teal, new Vector2(0f, 250f), new Vector2(440f, 32f), TextAlignmentOptions.Left, true).characterSpacing = 6f;
             var current = Text("Current", t, "Layout: Classroom", 21f, Palette.UiText, new Vector2(0f, 217f), new Vector2(440f, 32f));
 
-            var brief = Button("Brief", t, "BRIEF THE TEAM", new Vector2(0f, 158f), new Vector2(440f, 64f), new Color(0.16f, 0.55f, 0.48f), out _, 24f);
+            var brief = Button("Brief", t, "BRIEF THE TEAM", new Vector2(0f, 158f), new Vector2(440f, 64f), Palette.UiPrimary, out _, 23f);
+            AddIcon(brief, "Icons/command-center", 30f);
 
-            var buttons = new List<Object>();
-            var highlights = new List<Object>();
-            for (int i = 0; i < 6; i++)
+            // Layout and room theme as compact dropdown rows.
+            Button Dropdown(string name, string label, float y, out TextMeshProUGUI value)
             {
-                int col = i % 2, row = i / 2;
-                var b = Button($"Layout_{i}", t, WorkspaceLayout.DisplayName((LayoutType)i), new Vector2(col == 0 ? -113f : 113f, 82f - row * 64f),
-                    new Vector2(214f, 56f), Palette.UiButton, out _);
-                buttons.Add(b);
-                highlights.Add(b.targetGraphic);
+                Text(name + "Label", t, label, 19f, Palette.UiMuted, new Vector2(-155f, y), new Vector2(130f, 40f), TextAlignmentOptions.Left);
+                var b = Button(name, t, "", new Vector2(70f, y), new Vector2(300f, 48f), Palette.UiPanelRaised, out value, 18f);
+                value.alignment = TextAlignmentOptions.Left;
+                value.rectTransform.offsetMin = new Vector2(18f, 4f);
+                var chev = Icon("Chevron", b.transform, "Icons/chevron-right", new Vector2(126f, 0f), 20f, Palette.UiMuted);
+                chev.rectTransform.localRotation = Quaternion.Euler(0f, 0f, -90f);
+                return b;
             }
+            var layoutDrop = Dropdown("LayoutDropdown", "Layout", 90f, out var layoutValue);
+            var themeDrop = Dropdown("ThemeDropdown", "Room theme", 34f, out var themeValue);
 
-            var meeting = Button("Meeting", t, "DISCUSSION", new Vector2(-113f, -132f), new Vector2(214f, 52f), new Color(0.32f, 0.36f, 0.55f), out var meetingLabel, 19f);
-            var hold = Button("HoldQueue", t, "HOLD QUEUE", new Vector2(113f, -132f), new Vector2(214f, 52f), new Color(0.45f, 0.33f, 0.16f), out var holdLabel, 19f);
-            var auto = Button("DemoMode", t, "DEMO: ON", new Vector2(-113f, -190f), new Vector2(214f, 52f), new Color(0.24f, 0.3f, 0.36f), out var autoLabel, 19f);
-            var mr = Button("Passthrough", t, "MIXED REALITY", new Vector2(113f, -190f), new Vector2(214f, 52f), new Color(0.2f, 0.42f, 0.62f), out var mrLabel, 19f);
-            var settingsBtn = Button("Settings", t, "SETTINGS & HISTORY", new Vector2(0f, -246f), new Vector2(440f, 48f), Palette.UiButton, out _, 19f);
-
-            // Settings page (same panel, swapped in by SETTINGS & HISTORY or by pinching the done tray).
-            Transform s = View("SettingsView", canvas.transform);
-            Text("Title", s, "SETTINGS", 22f, Palette.Teal, new Vector2(0f, 250f), new Vector2(440f, 32f), TextAlignmentOptions.Left, true).characterSpacing = 6f;
-            var mode = Text("Mode", s, "", 18f, Palette.UiText, new Vector2(0f, 214f), new Vector2(440f, 30f), TextAlignmentOptions.Left);
-            mode.enableAutoSizing = true; mode.fontSizeMin = 13f; mode.fontSizeMax = 18f;
-            var enterKey = Button("EnterKey", s, "ENTER API KEY", new Vector2(-124f, 168f), new Vector2(192f, 50f), new Color(0.16f, 0.55f, 0.48f), out _, 17f);
-            var test = Button("Test", s, "TEST", new Vector2(42f, 168f), new Vector2(124f, 50f), Palette.UiButton, out _, 17f);
-            var remove = Button("RemoveKey", s, "REMOVE", new Vector2(164f, 168f), new Vector2(112f, 50f), new Color(0.42f, 0.22f, 0.22f), out _, 17f);
-            var status = Text("Status", s, "", 15f, Palette.UiMuted, new Vector2(0f, 120f), new Vector2(440f, 44f), TextAlignmentOptions.TopLeft);
-            Panel("Divider", s, new Vector2(0f, 92f), new Vector2(440f, 2f), new Color(1f, 1f, 1f, 0.12f), false);
-            var histTitle = Text("HistoryTitle", s, "WORK HISTORY", 18f, Palette.Teal, new Vector2(0f, 72f), new Vector2(440f, 28f), TextAlignmentOptions.Left, true);
-            var histBody = Text("HistoryBody", s, "", 17f, Palette.UiText, new Vector2(0f, -45f), new Vector2(440f, 200f), TextAlignmentOptions.TopLeft);
-            histBody.enableAutoSizing = true; histBody.fontSizeMin = 11f; histBody.fontSizeMax = 17f;
-            histBody.overflowMode = TextOverflowModes.Ellipsis;
-            var prev = Button("Older", s, "< OLDER", new Vector2(-113f, -172f), new Vector2(214f, 46f), Palette.UiButton, out _, 17f);
-            var next = Button("Newer", s, "NEWER >", new Vector2(113f, -172f), new Vector2(214f, 46f), Palette.UiButton, out _, 17f);
-            var reset = Button("Reset", s, "RESET SESSION", new Vector2(-113f, -236f), new Vector2(214f, 52f), new Color(0.48f, 0.2f, 0.2f), out var resetLabel, 17f);
-            var back = Button("Back", s, "BACK", new Vector2(113f, -236f), new Vector2(214f, 52f), new Color(0.32f, 0.36f, 0.55f), out _, 19f);
-
-            var settingsUI = canvas.gameObject.AddComponent<SettingsPanelUI>();
-            Wire(settingsUI, "mainView", t.gameObject);
-            Wire(settingsUI, "settingsView", s.gameObject);
-            Wire(settingsUI, "modeText", mode);
-            Wire(settingsUI, "statusText", status);
-            Wire(settingsUI, "enterKeyButton", enterKey);
-            Wire(settingsUI, "testButton", test);
-            Wire(settingsUI, "removeKeyButton", remove);
-            Wire(settingsUI, "historyTitle", histTitle);
-            Wire(settingsUI, "historyBody", histBody);
-            Wire(settingsUI, "prevButton", prev);
-            Wire(settingsUI, "nextButton", next);
-            Wire(settingsUI, "resetButton", reset);
-            Wire(settingsUI, "resetLabel", resetLabel);
-            Wire(settingsUI, "backButton", back);
-            s.gameObject.SetActive(false);
+            Button Cell(string name, string label, int col, float y, out TextMeshProUGUI l) =>
+                Button(name, t, label, new Vector2(col == 0 ? -113f : 113f, y), new Vector2(214f, 50f), Palette.UiButton, out l, 17f);
+            var addAgent = Cell("AddAgent", "ADD AGENT", 0, -30f, out var addAgentLabel);
+            var meeting = Cell("Meeting", "DISCUSSION", 1, -30f, out var meetingLabel);
+            var hold = Cell("HoldQueue", "HOLD QUEUE", 0, -88f, out var holdLabel);
+            var auto = Cell("DemoMode", "DEMO: ON", 1, -88f, out var autoLabel);
+            var mr = Cell("Passthrough", "MIXED REALITY", 0, -146f, out var mrLabel);
+            var history = Cell("History", "HISTORY", 1, -146f, out _);
+            var tour = Cell("Tour", "TUTORIAL", 0, -204f, out _);
+            var settingsBtn = Cell("Settings", "SETTINGS", 1, -204f, out _);
+            AddIcon(settingsBtn, "Icons/settings", 22f);
+            AddIcon(history, "Icons/recently-played", 22f);
 
             var ui = canvas.gameObject.AddComponent<LayoutSelectorUI>();
-            WireArray(ui, "layoutButtons", buttons.ToArray());
-            WireArray(ui, "layoutHighlights", highlights.ToArray());
+            Wire(ui, "layoutDropdown", layoutDrop);
+            Wire(ui, "layoutValue", layoutValue);
+            Wire(ui, "themeDropdown", themeDrop);
+            Wire(ui, "themeValue", themeValue);
+            Wire(ui, "historyButton", history);
+            Wire(ui, "tourButton", tour);
             Wire(ui, "currentLabel", current);
             Wire(ui, "briefButton", brief);
             Wire(ui, "meetingButton", meeting);
@@ -753,8 +838,208 @@ namespace AIManagerWorkspace
             Wire(ui, "holdButton", hold);
             Wire(ui, "holdLabel", holdLabel);
             Wire(ui, "settingsButton", settingsBtn);
-            Wire(ui, "settings", settingsUI);
+            Wire(ui, "settings", settings);
+            Wire(ui, "addAgentButton", addAgent);
+            Wire(ui, "addAgentLabel", addAgentLabel);
             return canvas;
+        }
+
+        // ══ Grabbable desk objects ═════════════════════════════════════════════
+
+        private static TextMeshPro Label3D(Transform parent, string text, Vector3 pos, float size, Color color)
+        {
+            var go = new GameObject("Label");
+            go.transform.SetParent(parent, false);
+            go.transform.localPosition = pos;
+            go.transform.localRotation = Quaternion.Euler(40f, 0f, 0f);   // lies back, readable from the manager's side
+            var t = go.AddComponent<TextMeshPro>();
+            t.text = text;
+            t.fontSize = size;
+            t.color = color;
+            t.alignment = TextAlignmentOptions.Center;
+            t.textWrappingMode = TextWrappingModes.NoWrap;
+            t.rectTransform.sizeDelta = new Vector2(0.2f, 0.04f);
+            if (UiFont.Bold != null) t.font = UiFont.Bold;
+            return t;
+        }
+
+        /// <summary>A queue bell on the desk: tap it to pause / resume the line.</summary>
+        private static void BuildDeskObjects(Transform deskRoot)
+        {
+            Material brass = Mat("Bell_Brass", new Color(0.86f, 0.68f, 0.32f), 0.85f, 0.9f);
+            Material dark = Mat("Bell_Base", new Color(0.1f, 0.1f, 0.11f), 0.6f, 0.3f);
+            Material glow = Emissive("Bell_Glow", Palette.Teal, 1.6f);
+
+            var bell = Empty("QueueBell", deskRoot, new Vector3(-0.5f, DeskTopY, 1.42f)).transform;
+            Cyl("Base", bell, new Vector3(0f, 0.008f, 0f), 0.05f, 0.016f, dark, false);
+            var ring = Cyl("GlowRing", bell, new Vector3(0f, 0.017f, 0f), 0.052f, 0.003f, glow, false);
+            Ball("Dome", bell, new Vector3(0f, 0.03f, 0f), new Vector3(0.085f, 0.05f, 0.085f), brass);
+            var plunger = Cyl("Plunger", bell, new Vector3(0f, 0.062f, 0f), 0.007f, 0.018f, brass, false).transform;
+            Label3D(bell, "QUEUE", new Vector3(0f, 0.012f, -0.065f), 0.14f, Palette.UiMuted);
+            var b = bell.gameObject.AddComponent<DeskBell>();
+            Wire(b, "button", plunger);
+            Wire(b, "ring", ring.GetComponent<Renderer>());
+            NoShadows(ring);
+        }
+
+        // ══ Windows (desk monitors and the settings window) ═══════════════════
+
+        private static readonly List<Canvas> WindowBars = new List<Canvas>();
+
+        /// <summary>A desk monitor: a holder you can move, with a slim dark bezel behind the screen.</summary>
+        private static Transform Monitor(string name, Transform deskRoot, Vector3 pos, Vector3 euler)
+        {
+            return Empty(name, deskRoot, pos, euler).transform;
+        }
+
+        /// <summary>Slim dark bezel behind a monitor screen; lives inside the canvas so it slides with it.</summary>
+        private static void Bezel(Canvas canvas)
+        {
+            Material bezel = Mat("Monitor_Bezel", new Color(0.05f, 0.055f, 0.06f), 0.6f, 0.2f);
+            var frame = Box("Bezel", canvas.transform, new Vector3(0f, 0f, 12f), new Vector3(500f, 580f, 16f), bezel, false);
+            NoShadows(frame);
+        }
+
+        /// <summary>Adds the Horizon-style window bar (move / size / snap / minimize / close) under a window.</summary>
+        private static void AddWindowChrome(GameObject holder, Canvas content, string id, string title, float barY, bool closable, bool slide)
+        {
+            var bar = WorldCanvas("WindowBar", holder.transform, new Vector3(0f, barY, -0.012f), Vector3.zero, new Vector2(440f, 150f), 0.001f);
+            var grab = new GameObject("GrabHandle");
+            grab.transform.SetParent(bar.transform, false);
+            grab.transform.localPosition = new Vector3(0f, 0f, -6f);
+            var col = grab.AddComponent<BoxCollider>();
+            col.size = new Vector3(140f, 44f, 6f);
+            AddRayTarget(grab, col);
+            var chrome = holder.AddComponent<WindowChrome>();
+            var so = new SerializedObject(chrome);
+            so.FindProperty("id").stringValue = id;
+            so.FindProperty("title").stringValue = title;
+            so.FindProperty("barOffsetY").floatValue = barY;
+            so.FindProperty("closable").boolValue = closable;
+            so.FindProperty("slideIntoDesk").boolValue = slide;
+            so.ApplyModifiedPropertiesWithoutUndo();
+            Wire(chrome, "content", content.gameObject);
+            Wire(chrome, "bar", bar);
+            Wire(chrome, "grabHandle", grab.transform);
+            WindowBars.Add(bar);
+
+            // Desk monitors resize freely in width and height (the settings window reflows on its own).
+            if (slide)
+            {
+                var resp = holder.AddComponent<ResponsiveWindow>();
+                var rso = new SerializedObject(resp);
+                rso.FindProperty("id").stringValue = id;
+                rso.FindProperty("canvas").objectReferenceValue = content.GetComponent<RectTransform>();
+                rso.FindProperty("minSize").vector2Value = new Vector2(380f, 440f);
+                rso.FindProperty("maxSize").vector2Value = new Vector2(960f, 1000f);
+                rso.ApplyModifiedPropertiesWithoutUndo();
+            }
+        }
+
+        // ══ Settings window, tutorial, notices ═══════════════════════════════
+
+        private static Canvas BuildSettingsWindow(Transform deskRoot, PassthroughToggle passthrough, out SettingsWindow window)
+        {
+            var holder = Empty("SettingsWindow", deskRoot, new Vector3(0f, DeskTopY + 0.5f, 1.2f), new Vector3(10f, 0f, 0f));
+            var canvas = WorldCanvas("SettingsCanvas", holder.transform, Vector3.zero, Vector3.zero, new Vector2(1100f, 680f), 0.001f);
+            window = holder.AddComponent<SettingsWindow>();
+            Wire(window, "root", canvas.gameObject);
+            Wire(window, "passthrough", passthrough);
+            AddWindowChrome(holder, canvas, "settings", "Settings", -0.385f, true, false);
+            return canvas;
+        }
+
+        private static Canvas BuildTutorial(Transform deskRoot, out TutorialManager tutorial)
+        {
+            var holder = Empty("Tutorial", deskRoot, new Vector3(0f, DeskTopY, 0f));
+            var panel = Empty("Panel", holder.transform, new Vector3(0f, 0.36f, 0.98f), new Vector3(18f, 0f, 0f));
+            var canvas = WorldCanvas("TutorialCanvas", panel.transform, Vector3.zero, Vector3.zero, new Vector2(780f, 470f), 0.001f);
+            tutorial = holder.AddComponent<TutorialManager>();
+            Wire(tutorial, "root", canvas.gameObject);
+            Wire(tutorial, "panel", panel.transform);
+            return canvas;
+        }
+
+        private static void BuildControllerNotice(InputModeManager manager)
+        {
+            var holder = new GameObject("HandsOnlyNotice");
+            var canvas = WorldCanvas("Canvas", holder.transform, Vector3.zero, Vector3.zero, new Vector2(620f, 300f), 0.001f);
+            Transform t = canvas.transform;
+            Panel("Background", t, Vector2.zero, new Vector2(620f, 300f), Palette.UiPanel);
+            Icon("Hand", t, "Icons/UserIcon", new Vector2(-250f, 92f), 44f, Palette.Teal);
+            Text("Title", t, "This workspace is built for your hands", 26f, Palette.UiText, new Vector2(30f, 92f), new Vector2(500f, 40f), TextAlignmentOptions.Left, true);
+            Text("Body", t,
+                "Put your controllers down: hand tracking takes over in a moment.\n\n" +
+                "Prefer controllers? Hold <b>both triggers</b> for 2 seconds, or turn on <b>Controller mode</b> in Settings > Hands & Input.\n" +
+                "<color=#9AA3B2>(If hands don't appear, enable \"Hand and body tracking\" with auto-switch in the Quest settings.)</color>",
+                17f, Palette.UiMuted, new Vector2(0f, -14f), new Vector2(560f, 150f), TextAlignmentOptions.TopLeft);
+            Panel("Track", t, new Vector2(0f, -122f), new Vector2(560f, 8f), new Color(1f, 1f, 1f, 0.08f));
+            var fill = Panel("Fill", t, new Vector2(0f, -122f), new Vector2(560f, 8f), Palette.Teal);
+            fill.type = Image.Type.Filled;
+            fill.fillMethod = Image.FillMethod.Horizontal;
+            fill.fillAmount = 0f;
+            Wire(manager, "notice", holder);
+            Wire(manager, "holdFill", fill);
+        }
+
+        private static void BuildGestureRing(HandGestureRecognizer recognizer)
+        {
+            var holder = new GameObject("GestureRing");
+            var canvas = WorldCanvas("Canvas", holder.transform, Vector3.zero, Vector3.zero, new Vector2(120f, 120f), 0.0006f);
+            var group = canvas.gameObject.AddComponent<CanvasGroup>();
+            group.alpha = 0f;
+            group.interactable = false;
+            group.blocksRaycasts = false;
+            Sprite knob = AssetDatabase.GetBuiltinExtraResource<Sprite>("UI/Skin/Knob.psd");
+            Image Circle(string n, float size, Color c)
+            {
+                var img = Panel(n, canvas.transform, Vector2.zero, new Vector2(size, size), c, false);
+                img.sprite = knob;
+                return img;
+            }
+            Circle("Back", 120f, new Color(0.05f, 0.06f, 0.07f, 0.75f));
+            var fill = Circle("Fill", 120f, Palette.Teal);
+            fill.type = Image.Type.Filled;
+            fill.fillMethod = Image.FillMethod.Radial360;
+            fill.fillOrigin = (int)Image.Origin360.Top;
+            fill.fillAmount = 0f;
+            Circle("Hole", 100f, new Color(0.07f, 0.08f, 0.1f, 0.95f));
+            var icon = Icon("Icon", canvas.transform, "ThumbsUp", Vector2.zero, 64f, Color.white);
+            var ring = holder.AddComponent<GestureRing>();
+            Wire(ring, "recognizer", recognizer);
+            Wire(ring, "group", group);
+            Wire(ring, "fill", fill);
+            Wire(ring, "icon", icon);
+            Wire(ring, "thumbsUp", IconTexture("ThumbsUp"));
+            Wire(ring, "thumbsDown", IconTexture("ThumbsDown"));
+            Wire(ring, "palm", IconTexture("HandStop"));
+        }
+
+        private static void BuildUiKitAssets(GameObject host)
+        {
+            var kit = host.AddComponent<UiKitAssets>();
+            var so = new SerializedObject(kit);
+            so.FindProperty("medium").objectReferenceValue = UiFont.Medium;
+            so.FindProperty("bold").objectReferenceValue = UiFont.Bold;
+            so.FindProperty("rounded").objectReferenceValue = Rounded;
+            var map = new (string name, string path)[]
+            {
+                ("settings", "Icons/settings"), ("user", "Icons/UserIcon"), ("UserIcon", "Icons/UserIcon"), ("chat", "Icons/chat"),
+                ("command-center", "Icons/command-center"), ("category-all", "Icons/category-all"), ("volume-on", "Icons/volume-on"),
+                ("recently-played", "Icons/recently-played"), ("more-horizontal", "Icons/more-horizontal"), ("check-alt", "Icons/check-alt"),
+                ("Arrow", "Icons/Arrow"), ("warning", "Icons/warning"), ("ThumbsUp", "ThumbsUp"), ("ThumbsDown", "ThumbsDown"),
+                ("HandStop", "HandStop"), ("Teleport-Hands", "Teleport-Hands"), ("Plus", "Icons/Plus"), ("Minus", "Icons/Minus"),
+                ("chevron-right", "Icons/chevron-right")
+            };
+            var list = so.FindProperty("icons");
+            list.arraySize = map.Length;
+            for (int i = 0; i < map.Length; i++)
+            {
+                var e = list.GetArrayElementAtIndex(i);
+                e.FindPropertyRelative("name").stringValue = map[i].name;
+                e.FindPropertyRelative("texture").objectReferenceValue = IconTexture(map[i].path);
+            }
+            so.ApplyModifiedPropertiesWithoutUndo();
         }
 
         /// <summary>Full-size child group of a panel, so a panel can swap between pages.</summary>
@@ -769,11 +1054,18 @@ namespace AIManagerWorkspace
 
         private static Canvas BuildDetailPanel(Transform deskRoot)
         {
-            var canvas = WorldCanvas("AgentCard", deskRoot, new Vector3(0.86f, DeskTopY + 0.3f, 1.06f), new Vector3(24f, 46f, 0f), new Vector2(480f, 560f), 0.001f);
+            var monitor = Monitor("AgentMonitor", deskRoot, new Vector3(0.84f, DeskTopY + 0.4f, 1.1f), new Vector3(6f, 34f, 0f));
+            var canvas = WorldCanvas("AgentCard", monitor, Vector3.zero, Vector3.zero, new Vector2(480f, 560f), 0.001f);
+            Bezel(canvas);
+            AddWindowChrome(monitor.gameObject, canvas, "agents", "Agents", -0.335f, false, true);
             Transform t = canvas.transform;
             Panel("Background", t, Vector2.zero, new Vector2(480f, 560f), Palette.UiPanel);
             var accent = Panel("Accent", t, new Vector2(0f, 271f), new Vector2(480f, 18f), Palette.Teal);
-            Text("Title", t, "SELECTED AGENT", 22f, Palette.Teal, new Vector2(0f, 235f), new Vector2(440f, 32f), TextAlignmentOptions.Left, true).characterSpacing = 6f;
+            var picker = Button("AgentPicker", t, "Choose an agent", new Vector2(0f, 232f), new Vector2(440f, 46f), Palette.UiPanelRaised, out var pickerLabel, 18f);
+            pickerLabel.alignment = TextAlignmentOptions.Left;
+            pickerLabel.rectTransform.offsetMin = new Vector2(18f, 4f);
+            var chevron = Icon("Chevron", picker.transform, "Icons/chevron-right", new Vector2(196f, 0f), 22f, Palette.UiMuted);
+            chevron.rectTransform.localRotation = Quaternion.Euler(0f, 0f, -90f);
             var name = Text("Name", t, "", 34f, Palette.UiText, new Vector2(-60f, 190f), new Vector2(320f, 50f), TextAlignmentOptions.Left, true);
             var pill = Panel("StatusPill", t, new Vector2(150f, 190f), new Vector2(150f, 40f), Palette.Teal);
             var status = Text("Status", pill.transform, "", 16f, new Color(0.07f, 0.08f, 0.1f), Vector2.zero, new Vector2(150f, 40f), TextAlignmentOptions.Center, true);
@@ -781,8 +1073,11 @@ namespace AIManagerWorkspace
             body.enableAutoSizing = true; body.fontSizeMin = 14f; body.fontSizeMax = 21f;
             var assign = Button("Assign", t, "ASSIGN TASK", new Vector2(-50f, -140f), new Vector2(340f, 58f), new Color(0.16f, 0.55f, 0.48f), out var assignLabel);
             var close = Button("Close", t, "X", new Vector2(176f, -140f), new Vector2(88f, 58f), new Color(0.3f, 0.32f, 0.37f), out _);
-            var role = Button("Role", t, "CHANGE ROLE", new Vector2(-113f, -210f), new Vector2(214f, 54f), Palette.UiButton, out _, 19f);
-            var next = Button("ReviewNext", t, "REVIEW NEXT", new Vector2(113f, -210f), new Vector2(214f, 54f), new Color(0.55f, 0.42f, 0.16f), out _, 19f);
+            var role = Button("Role", t, "ROLE", new Vector2(-168f, -210f), new Vector2(104f, 54f), Palette.UiButton, out _, 15f);
+            var brain = Button("Brain", t, "BRAIN", new Vector2(-56f, -210f), new Vector2(112f, 54f), Palette.UiBlue, out var brainLabel, 13f);
+            brainLabel.enableAutoSizing = true; brainLabel.fontSizeMin = 9f; brainLabel.fontSizeMax = 13f;
+            var next = Button("ReviewNext", t, "REVIEW NEXT", new Vector2(56f, -210f), new Vector2(104f, 54f), Palette.UiWarn, out _, 13f);
+            var remove = Button("Remove", t, "REMOVE", new Vector2(168f, -210f), new Vector2(104f, 54f), Palette.UiDanger, out var removeLabel, 15f);
 
             var ui = canvas.gameObject.AddComponent<AgentDetailPanel>();
             Wire(ui, "accentBar", accent);
@@ -795,6 +1090,18 @@ namespace AIManagerWorkspace
             Wire(ui, "roleButton", role);
             Wire(ui, "nextButton", next);
             Wire(ui, "closeButton", close);
+            var pickerList = new GameObject("AgentList", typeof(RectTransform)).GetComponent<RectTransform>();
+            pickerList.SetParent(t, false);
+            pickerList.anchoredPosition = new Vector2(0f, -22f);
+            pickerList.sizeDelta = new Vector2(456f, 470f);
+            pickerList.SetAsLastSibling();
+            Wire(ui, "pickerButton", picker);
+            Wire(ui, "pickerLabel", pickerLabel);
+            Wire(ui, "pickerList", pickerList);
+            Wire(ui, "removeButton", remove);
+            Wire(ui, "removeLabel", removeLabel);
+            Wire(ui, "brainButton", brain);
+            Wire(ui, "brainLabel", brainLabel);
             return canvas;
         }
 
@@ -807,24 +1114,22 @@ namespace AIManagerWorkspace
             Text("Title", t, "AI MANAGER", 18f, Palette.Teal, new Vector2(0f, 166f), new Vector2(290f, 28f), TextAlignmentOptions.Center, true).characterSpacing = 6f;
             Button Cell(string name, string label, int col, int row, Color c, out TextMeshProUGUI l) =>
                 Button(name, t, label, new Vector2(col == 0 ? -76f : 76f, 112f - row * 76f), new Vector2(144f, 66f), c, out l, 17f);
-            var brief = Cell("Brief", "BRIEF TEAM", 0, 0, new Color(0.16f, 0.55f, 0.48f), out _);
-            var demo = Cell("Demo", "DEMO: ON", 1, 0, new Color(0.24f, 0.3f, 0.36f), out var demoLabel);
-            var layout = Cell("Layout", "CLASSROOM", 0, 1, Palette.UiButton, out var layoutLabel);
-            var mr = Cell("MR", "MIXED REALITY", 1, 1, new Color(0.2f, 0.42f, 0.62f), out _);
-            var desk = Cell("Desk", "BACK TO DESK", 0, 2, new Color(0.32f, 0.36f, 0.55f), out _);
-            var fit = Cell("Fit", "FIT DESK", 1, 2, Palette.UiButton, out _);
-            var holdBtn = Button("Hold", t, "HOLD QUEUE", new Vector2(0f, 112f - 3 * 76f), new Vector2(296f, 66f), new Color(0.45f, 0.33f, 0.16f), out var holdText, 17f);
+            var down = Cell("HeightDown", "HEIGHT  -", 0, 0, Palette.UiButton, out _);
+            var up = Cell("HeightUp", "HEIGHT  +", 1, 0, Palette.UiButton, out _);
+            var auto = Cell("AutoHeight", "AUTO HEIGHT", 0, 1, Palette.UiPrimary, out _);
+            var desk = Cell("Desk", "BACK TO DESK", 1, 1, Palette.UiButton, out _);
+            var mr = Cell("MR", "MIXED REALITY", 0, 2, Palette.UiButton, out _);
+            var fit = Cell("Settings", "SETTINGS", 1, 2, Palette.UiButton, out _);
+            var holdBtn = Button("Hold", t, "HOLD QUEUE", new Vector2(0f, 112f - 3 * 76f), new Vector2(296f, 66f), Palette.UiButton, out var holdText, 17f);
 
             var menu = root.AddComponent<HandMenu>();
             Wire(menu, "panel", canvas.gameObject);
-            Wire(menu, "briefButton", brief);
-            Wire(menu, "demoButton", demo);
-            Wire(menu, "demoLabel", demoLabel);
-            Wire(menu, "layoutButton", layout);
-            Wire(menu, "layoutLabel", layoutLabel);
+            Wire(menu, "heightDownButton", down);
+            Wire(menu, "heightUpButton", up);
+            Wire(menu, "autoHeightButton", auto);
             Wire(menu, "mrButton", mr);
             Wire(menu, "deskButton", desk);
-            Wire(menu, "fitButton", fit);
+            Wire(menu, "settingsButton", fit);
             Wire(menu, "holdButton", holdBtn);
             Wire(menu, "holdLabel", holdText);
             Wire(menu, "passthrough", passthrough);

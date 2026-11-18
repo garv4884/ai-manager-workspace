@@ -36,12 +36,13 @@ namespace AIManagerWorkspace
             foreach (var a in agents.Agents)
             {
                 AgentData d = a.Data;
-                string task = a.CurrentTask != null ? a.CurrentTask.title : "-";
+                string task = !string.IsNullOrEmpty(a.WorkTitle) ? a.WorkTitle : "-";
                 if (a.BacklogCount > 0) task += $" (+{a.BacklogCount})";
                 string where = d.ActivityLabel;
-                if (d.status == AgentStatus.Working && a.CurrentTask != null && d.activity == AgentActivity.AtDesk)
-                    where = $"{Mathf.RoundToInt(a.CurrentTask.progress * 100f)}%";
-                sb.Append($"<color=#{ColorUtility.ToHtmlStringRGB(d.accentColor)}>|</color> <b>{d.agentName}</b> <size=70%><color=#9AA3B2>{d.agentRole}</color></size>")
+                if (d.status == AgentStatus.Working && d.activity == AgentActivity.AtDesk && a.WorkProgress >= 0f)
+                    where = $"{Mathf.RoundToInt(a.WorkProgress * 100f)}%";
+                string role = d.IsLinked ? $"<color=#4FD1C5>LIVE</color> {d.linkedKind}" : d.agentRole;
+                sb.Append($"<color=#{ColorUtility.ToHtmlStringRGB(d.accentColor)}>|</color> <b>{d.agentName}</b> <size=70%><color=#9AA3B2>{role}</color></size>")
                   .Append($"<pos=30%><color=#{ColorUtility.ToHtmlStringRGB(d.StatusColor)}>{d.StatusLabel}</color>")
                   .Append($"<pos=52%>{Trim(task, 24)}")
                   .Append($"<pos=82%><color=#9AA3B2>{where}</color>\n");
@@ -53,7 +54,8 @@ namespace AIManagerWorkspace
             string goal = brief != null ? $"Goal: <b>{TaskLibrary.Trim(brief.goal, 34)}</b> ({brief.Finished}/{brief.tasks.Count})     " : "";
             footerText.text = goal +
                 $"Presenting: <b>{presenting}</b>     In line: <b>{queue.Waiting.Count}</b>     " +
-                $"Approved today: <b>{queue.Desk.Completed}</b>     <color=#9AA3B2>{gm.AI.ModeLabel}</color>";
+                $"Approved: <b>{queue.Desk.Completed}</b>     <color=#9AA3B2>{gm.AI.ModeLabel}</color>" +
+                (gm.Bridge != null && gm.Bridge.Connected ? $"     <color=#4FD1C5>BRIDGE · {gm.Bridge.LinkedCount} live</color>" : "");
         }
 
         private static string Chip(AgentStatus s, int n, string label) =>

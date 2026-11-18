@@ -8,14 +8,14 @@ namespace AIManagerWorkspace
     /// </summary>
     public class ReviewDesk : MonoBehaviour
     {
-        public enum Sfx { Arrive, Approve, Changes, Dismiss, Key, Notify }
+        public enum Sfx { Arrive, Approve, Changes, Dismiss, Key, Notify, Click }
 
         [SerializeField] private Transform reviewAnchor;
         [SerializeField] private Transform doneTray;
         [SerializeField] private Transform doneStack;
         [SerializeField] private AudioSource audioSource;
 
-        private AudioClip arrive, approve, changes, dismiss, key, notify;
+        private AudioClip arrive, approve, changes, dismiss, key, notify, click;
 
         public Transform ReviewAnchor => reviewAnchor;
         public Transform DoneTray => doneTray;
@@ -32,6 +32,7 @@ namespace AIManagerWorkspace
             dismiss = Tone("dismiss", new[] { 330f, 247f }, 0.12f);
             key = Tone("key", new[] { 1400f }, 0.025f);
             notify = Tone("notify", new[] { 988f, 1319f }, 0.09f);
+            click = Tone("click", new[] { 1760f }, 0.018f);
             UpdateStack();
         }
 
@@ -40,9 +41,13 @@ namespace AIManagerWorkspace
             AudioClip clip = s switch
             {
                 Sfx.Arrive => arrive, Sfx.Approve => approve, Sfx.Changes => changes,
-                Sfx.Dismiss => dismiss, _ => key
+                Sfx.Dismiss => dismiss, Sfx.Click => click, _ => key
             };
-            if (clip != null) audioSource.PlayOneShot(clip, s == Sfx.Key ? 0.35f : 0.8f);
+            if (clip == null) return;
+            AppSettings cfg = AppSettings.Current;
+            if (s == Sfx.Click && !cfg.uiClicks) return;
+            float level = s == Sfx.Key ? 0.35f : s == Sfx.Click ? 0.25f : 0.8f;
+            audioSource.PlayOneShot(clip, level * cfg.volume);
         }
 
         /// <summary>
@@ -51,8 +56,12 @@ namespace AIManagerWorkspace
         /// </summary>
         public void PlayNotifyAt(Vector3 position)
         {
-            if (notify != null) AudioSource.PlayClipAtPoint(notify, position + Vector3.up * 1.2f, 0.55f);
+            if (notify != null && AppSettings.Current.chimes)
+                AudioSource.PlayClipAtPoint(notify, position + Vector3.up * 1.2f, 0.55f * AppSettings.Current.volume);
         }
+
+        /// <summary>Plays a sound at full settings volume (tutorial ticks etc.).</summary>
+        public void PlayNotify() { if (notify != null) audioSource.PlayOneShot(notify, 0.7f * AppSettings.Current.volume); }
 
         public void SetCompleted(int count)
         {

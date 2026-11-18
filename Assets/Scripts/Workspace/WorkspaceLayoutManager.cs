@@ -30,13 +30,20 @@ namespace AIManagerWorkspace
         public LayoutType Current { get; private set; }
         public event Action Changed;
 
-        private void Start() => ApplyLayout(startLayout, instant: true);
+        private LayoutType lastTemplate = LayoutType.Grid;
+
+        /// <summary>Called by AgentManager once the starting team is spawned.</summary>
+        public void ApplyStartLayout() => ApplyLayout(startLayout, instant: true);
+
+        /// <summary>Re-applies the current template after agents join or leave (a hand-arranged room uses its last template).</summary>
+        public void Reflow() => ApplyLayout(Current == LayoutType.Custom ? lastTemplate : Current, false);
 
         public void ApplyLayout(LayoutType type) => ApplyLayout(type, false);
 
         public void ApplyLayout(LayoutType type, bool instant)
         {
             if (type == LayoutType.Custom) return;
+            lastTemplate = type;
             var desks = ActiveWorkstations();
             List<DeskPose> poses = WorkspaceLayout.Generate(type, desks.Count, center.position);
             Current = type;
@@ -58,6 +65,16 @@ namespace AIManagerWorkspace
             for (int i = 0; i < desks.Count; i++)
                 desks[i].transform.SetPositionAndRotation(poses[i].position, poses[i].rotation);
             Current = type;
+            if (type != LayoutType.Custom) lastTemplate = type;
+            Changed?.Invoke();
+        }
+
+        /// <summary>Desks were placed from a save: just record which template they follow.</summary>
+        public void MarkRestored(LayoutType type)
+        {
+            if (transition != null) { StopCoroutine(transition); transition = null; }
+            Current = type;
+            if (type != LayoutType.Custom) lastTemplate = type;
             Changed?.Invoke();
         }
 

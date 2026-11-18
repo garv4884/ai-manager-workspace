@@ -71,9 +71,15 @@ namespace AIManagerWorkspace
                 SetInt(so, "handTrackingFrequency", 1);       // High
                 SetBool(so, "requiresSystemKeyboard", true);  // Meta system keyboard overlay
                 SetInt(so, "_insightPassthroughSupport", 1);  // Supported
+                SetInt(so, "anchorSupport", 0);               // not used (MR Utility Kit's rule would turn these on)
+                SetInt(so, "sceneSupport", 0);
                 so.ApplyModifiedPropertiesWithoutUndo();
                 EditorUtility.SetDirty(config);
             }
+
+            // The agent bridge on the PC is plain http on 127.0.0.1 / the LAN; Android blocks cleartext unless allowed.
+            PlayerSettings.insecureHttpOption = InsecureHttpOption.AlwaysAllowed;
+            PlayerSettings.Android.forceInternetPermission = true;
 
             // The XRI device simulator draws two controllers in the Editor; it is not part of this app.
             var sim = AssetDatabase.LoadAssetAtPath<ScriptableObject>("Assets/XRI/Settings/Resources/XRDeviceSimulatorSettings.asset");

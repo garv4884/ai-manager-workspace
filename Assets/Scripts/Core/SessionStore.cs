@@ -38,13 +38,14 @@ namespace AIManagerWorkspace
 
         private const int Version = 1;
 
-        [Serializable] private class DeskSave { public Vector3 position; public float yaw; }
+        [Serializable] private class DeskSave { public string agent; public Vector3 position; public float yaw; }
         [Serializable] private class AgentSave
         {
             public string name;
             public string role;
             public int completed;
-            public int queueOrder = -1;          // 0 = was presenting, 1.. = place in line, -1 = not waiting
+            public int queueOrder = -1;
+            public string backend = "";          // 0 = was presenting, 1.. = place in line, -1 = not waiting
             public List<TaskData> tasks = new List<TaskData>();   // current task first, then the backlog
         }
         [Serializable] private class BriefSave
@@ -173,16 +174,17 @@ namespace AIManagerWorkspace
                 history = new List<HistoryEntry>(history)
             };
 
-            foreach (var ws in gm.Agents.Workstations)
+            foreach (var a in gm.Agents.Agents)
             {
-                if (ws == null || !ws.gameObject.activeSelf) continue;
-                data.desks.Add(new DeskSave { position = ws.transform.position, yaw = ws.transform.eulerAngles.y });
+                Transform ws = a.Workstation.transform;
+                data.desks.Add(new DeskSave { agent = a.Data.profileName, position = ws.position, yaw = ws.eulerAngles.y });
             }
 
             QueueManager q = gm.Queue;
             foreach (var a in gm.Agents.Agents)
             {
-                var s = new AgentSave { name = a.Data.agentName, role = a.Data.agentRole, completed = a.Data.completedTasks };
+                string role = a.Data.IsLinked ? a.Data.linkedRoleBeforeLink : a.Data.agentRole;
+                var s = new AgentSave { name = a.Data.profileName, role = role, completed = a.Data.completedTasks, backend = a.Data.backend };
                 if (q.Presenter == a) s.queueOrder = 0;
                 else { int i = IndexOf(q.Waiting, a); if (i >= 0) s.queueOrder = i + 1; }
                 s.tasks.AddRange(a.TasksForSave());
@@ -195,7 +197,7 @@ namespace AIManagerWorkspace
                 var b = briefs[i];
                 var s = new BriefSave
                 {
-                    id = b.id, goal = b.goal, lead = b.lead != null ? b.lead.Data.agentName : "",
+                    id = b.id, goal = b.goal, lead = b.lead != null ? b.lead.Data.profileName : "",
                     executed = b.executed, wrappedUp = b.wrappedUp
                 };
                 s.tasks.AddRange(b.tasks);
@@ -216,17 +218,34 @@ namespace AIManagerWorkspace
             history.Clear();
             if (data.history != null) history.AddRange(data.history);
 
+            // Team size: same agents as last time (added or removed in VR).
+            var wanted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var s in data.agents) if (!string.IsNullOrEmpty(s.name)) wanted.Add(s.name);
+            if (wanted.Count > 0)
+            {
+                foreach (var a in new List<AgentController>(gm.Agents.Agents))
+                    if (!wanted.Contains(a.Data.profileName)) gm.Agents.RemoveAgent(a, reflow: false);
+                foreach (var name in wanted)
+                    if (gm.Agents.Find(name) == null) gm.Agents.AddAgent(name, reflow: false);
+            }
+
+            var byName = new Dictionary<string, AgentController>(StringComparer.OrdinalIgnoreCase);
+            foreach (var a in gm.Agents.Agents) byName[a.Data.profileName] = a;
+
             // Desks and layout.
-            var poses = new List<DeskPose>();
-            foreach (var d in data.desks) poses.Add(new DeskPose { position = d.position, rotation = Quaternion.Euler(0f, d.yaw, 0f) });
-            gm.Layout.RestorePoses((LayoutType)Mathf.Clamp(data.layout, 0, (int)LayoutType.Custom), poses);
+            bool allPlaced = true;
+            foreach (var a in gm.Agents.Agents)
+            {
+                DeskSave d = data.desks.Find(x => string.Equals(x.agent, a.Data.profileName, StringComparison.OrdinalIgnoreCase));
+                if (d == null) { allPlaced = false; continue; }
+                a.Workstation.transform.SetPositionAndRotation(d.position, Quaternion.Euler(0f, d.yaw, 0f));
+            }
+            var layout = (LayoutType)Mathf.Clamp(data.layout, 0, (int)LayoutType.Custom);
+            if (allPlaced) gm.Layout.MarkRestored(layout);
+            else gm.Layout.ApplyLayout(layout == LayoutType.Custom ? LayoutType.Grid : layout, true);
 
             gm.Dispatcher.AutoDispatch = data.demoMode;
             gm.Queue.Desk.SetCompleted(data.approved);
-
-            // Agents: roles and counts first, so restored briefs can find their leads.
-            var byName = new Dictionary<string, AgentController>(StringComparer.OrdinalIgnoreCase);
-            foreach (var a in gm.Agents.Agents) byName[a.Data.agentName] = a;
 
             var liveTasks = new Dictionary<string, TaskData>();
             foreach (var s in data.agents)
@@ -234,6 +253,7 @@ namespace AIManagerWorkspace
                 if (!byName.TryGetValue(s.name, out var a)) continue;
                 a.Data.agentRole = string.IsNullOrWhiteSpace(s.role) ? a.Data.agentRole : s.role;
                 a.Data.completedTasks = s.completed;
+                a.Data.backend = s.backend ?? "";
                 foreach (var t in s.tasks) if (t != null && !string.IsNullOrEmpty(t.taskId)) liveTasks[t.taskId] = t;
             }
 

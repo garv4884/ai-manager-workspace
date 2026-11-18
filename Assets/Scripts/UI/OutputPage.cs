@@ -17,6 +17,8 @@ namespace AIManagerWorkspace
         [SerializeField] private TextMeshProUGUI bodyText;
         [SerializeField] private TextMeshProUGUI promptText;
         [SerializeField] private Image headerBar;
+        [SerializeField] private RectTransform viewport;      // masked area the body scrolls inside
+        [SerializeField] private TextMeshProUGUI moreHint;   // "more below" cue
         [SerializeField] private float carriedScale = 0.32f;
         [SerializeField] private float flySeconds = 0.7f;
 
@@ -25,6 +27,27 @@ namespace AIManagerWorkspace
         private Vector3 fullScale;
 
         public bool IsOut { get; private set; }
+
+        /// <summary>Scrolls the body (console ▲ / ▼ buttons). delta in canvas units, positive = down.</summary>
+        public void Scroll(float delta)
+        {
+            if (viewport == null || bodyText == null) return;
+            RectTransform c = bodyText.rectTransform;
+            float max = Mathf.Max(0f, bodyText.preferredHeight - viewport.rect.height + 12f);
+            float y = Mathf.Clamp(c.anchoredPosition.y + delta, 0f, max);
+            c.anchoredPosition = new Vector2(c.anchoredPosition.x, y);
+            UpdateHint();
+        }
+
+        public bool CanScroll => viewport != null && bodyText != null && bodyText.preferredHeight > viewport.rect.height + 4f;
+
+        private void UpdateHint()
+        {
+            if (moreHint == null || viewport == null) return;
+            float max = Mathf.Max(0f, bodyText.preferredHeight - viewport.rect.height + 12f);
+            float y = bodyText.rectTransform.anchoredPosition.y;
+            moreHint.text = max <= 1f ? "" : y < max - 1f ? "More below  ·  scroll on the console" : "End";
+        }
 
         public void Bind(AgentController owner, Transform hold)
         {
@@ -80,6 +103,16 @@ namespace AIManagerWorkspace
 
             if (promptText != null)
                 promptText.text = ManagerAction.GestureHint(ManagerAction.For(t, d.agentName));
+
+            if (viewport != null && bodyText != null)
+            {
+                // Body grows with its text and scrolls inside the viewport.
+                bodyText.ForceMeshUpdate();
+                var rt = bodyText.rectTransform;
+                rt.sizeDelta = new Vector2(rt.sizeDelta.x, Mathf.Max(viewport.rect.height, bodyText.preferredHeight + 8f));
+                rt.anchoredPosition = new Vector2(rt.anchoredPosition.x, 0f);
+                UpdateHint();
+            }
         }
 
         private void AttachToHands()

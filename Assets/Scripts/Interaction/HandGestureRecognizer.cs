@@ -40,6 +40,10 @@ namespace AIManagerWorkspace
         private float nextSearch;
 
         public Gesture Pending => holding;
+        /// <summary>The hand currently holding a gesture (null when none), for the ring at the hand.</summary>
+        public Hand ActiveHand { get; private set; }
+        /// <summary>Raised whenever a gesture fires (the tutorial listens).</summary>
+        public event System.Action<Gesture> Fired;
         public float HoldProgress => holding == Gesture.None ? 0f : Mathf.Clamp01(holdTime / Required(holding));
 
         private void Update()
@@ -54,20 +58,26 @@ namespace AIManagerWorkspace
                 if (kb.f3Key.wasPressedThisFrame) { Fire(Gesture.PalmPush); return; }
             }
 
-            if (hands.Count == 0 && Time.unscaledTime > nextSearch)
+            if (hands.Count < 2 && Time.unscaledTime > nextSearch)
             {
                 nextSearch = Time.unscaledTime + 2f;
-                hands.AddRange(FindObjectsByType<Hand>(FindObjectsInactive.Exclude));
+                foreach (var found in FindObjectsByType<Hand>(FindObjectsInactive.Exclude))
+                    if (!hands.Contains(found)) hands.Add(found);
             }
 
             Transform head = Camera.main != null ? Camera.main.transform : null;
             Gesture now = Gesture.None;
-            if (head != null)
+            ActiveHand = null;
+            Vector3? page = PageTarget();
+            bool facing = head != null && (!AppSettings.Current.gesturesNeedFacing || page == null || LookingAt(head, page.Value));
+            FacingPage = facing;
+            if (head != null && AppSettings.Current.gestures && facing)
                 foreach (Hand hand in hands)
                 {
                     if (hand == null || !hand.isActiveAndEnabled || !hand.IsTrackedDataValid) continue;
-                    now = Detect(hand, head);
-                    if (now != Gesture.None) break;
+                    now = Detect(hand, head, page);
+                    if (now == Gesture.PalmPush && !AppSettings.Current.palmGesture) now = Gesture.None;
+                    if (now != Gesture.None) { ActiveHand = hand; break; }
                 }
 
             if (now == Gesture.None) { needsRelease = false; holding = Gesture.None; holdTime = 0f; return; }
@@ -78,7 +88,11 @@ namespace AIManagerWorkspace
             if (holdTime >= Required(now)) Fire(now);
         }
 
-        private float Required(Gesture g) => g == Gesture.PalmPush ? palmHoldSeconds : thumbHoldSeconds;
+        private float Required(Gesture g)
+        {
+            float hold = AppSettings.Current.GestureHoldSeconds;
+            return g == Gesture.PalmPush ? hold + (palmHoldSeconds - thumbHoldSeconds) + 0.25f : hold;   // palm: deliberately slower
+        }
 
         private void Fire(Gesture g)
         {
@@ -86,6 +100,7 @@ namespace AIManagerWorkspace
             holdTime = 0f;
             cooldown = cooldownSeconds;
             needsRelease = true;
+            Fired?.Invoke(g);
             switch (g)
             {
                 case Gesture.ThumbsUp: OnThumbsUp.Invoke(); break;
@@ -94,7 +109,25 @@ namespace AIManagerWorkspace
             }
         }
 
-        private static Gesture Detect(IHand hand, Transform head)
+        /// <summary>True while the user looks at the page on the desk (gestures only count then).</summary>
+        public bool FacingPage { get; private set; }
+
+        private static Vector3? PageTarget()
+        {
+            GameManager gm = GameManager.Instance;
+            if (gm == null || gm.Queue == null || gm.Queue.Desk == null || gm.Queue.Desk.ReviewAnchor == null) return null;
+            return gm.Queue.Desk.ReviewAnchor.position;
+        }
+
+        /// <summary>Within ~35 degrees of the head's forward direction, and not too far away (you are at the desk).</summary>
+        private static bool LookingAt(Transform head, Vector3 target)
+        {
+            Vector3 to = target - head.position;
+            if (to.magnitude > 3.5f) return false;
+            return Vector3.Angle(head.forward, to) < 35f;
+        }
+
+        private static Gesture Detect(IHand hand, Transform head, Vector3? page)
         {
             if (!P(hand, HandJointId.HandPalm, out Vector3 palm) ||
                 !P(hand, HandJointId.HandWristRoot, out Vector3 wrist) ||
@@ -126,8 +159,9 @@ namespace AIManagerWorkspace
             {
                 Vector3 normal = Vector3.Cross(indexBase - wrist, pinkyBase - wrist).normalized;
                 if (hand.Handedness == Handedness.Right) normal = -normal;   // now points out of the palm
-                bool inFront = Vector3.Dot((palm - head.position).normalized, head.forward) > 0.5f;
-                bool facingAway = Vector3.Dot(normal, head.forward) > 0.6f;
+                bool inFront = Vector3.Dot((palm - head.position).normalized, head.forward) > 0.6f;
+                Vector3 aim = page.HasValue ? (page.Value - palm).normalized : head.forward;
+                bool facingAway = Vector3.Dot(normal, head.forward) > 0.7f && Vector3.Dot(normal, aim) > 0.65f;   // palm pushed at the page
                 bool fingersUp = (indexTip - wrist).normalized.y > 0.3f;
                 if (inFront && facingAway && fingersUp) return Gesture.PalmPush;
             }

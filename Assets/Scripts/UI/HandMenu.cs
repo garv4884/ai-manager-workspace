@@ -13,39 +13,39 @@ namespace AIManagerWorkspace
     public class HandMenu : MonoBehaviour
     {
         [SerializeField] private GameObject panel;
-        [SerializeField] private Button briefButton;
-        [SerializeField] private Button demoButton;
-        [SerializeField] private TextMeshProUGUI demoLabel;
-        [SerializeField] private Button layoutButton;
-        [SerializeField] private TextMeshProUGUI layoutLabel;
         [SerializeField] private Button mrButton;
         [SerializeField] private Button deskButton;
-        [SerializeField] private Button fitButton;
+        [SerializeField] private Button settingsButton;
+        [SerializeField] private Button heightUpButton;
+        [SerializeField] private Button heightDownButton;
+        [SerializeField] private Button autoHeightButton;
         [SerializeField] private Button holdButton;
         [SerializeField] private TextMeshProUGUI holdLabel;
         [SerializeField] private PassthroughToggle passthrough;
         [SerializeField] private Vector3 offsetFromPalm = new Vector3(0f, 0.12f, 0f);
         [SerializeField] private float showDot = 0.55f;
 
-        private Hand left;
+        private Hand left;   // the menu hand (left by default; right in left-handed setups)
+        private Handedness menuHand = Handedness.Left;
+        public bool IsVisible => panel != null && panel.activeSelf;
         private float nextSearch;
         private float visibleBlend;
 
         private void Start()
         {
             GameManager gm = GameManager.Instance;
-            briefButton.onClick.AddListener(gm.OpenTeamBriefKeyboard);
-            demoButton.onClick.AddListener(() => { gm.Dispatcher.AutoDispatch = !gm.Dispatcher.AutoDispatch; Refresh(); });
-            layoutButton.onClick.AddListener(() =>
-            {
-                int next = ((int)gm.Layout.Current + 1) % (int)LayoutType.Custom;
-                gm.Layout.ApplyLayout((LayoutType)next);
-                Refresh();
-            });
+            if (heightUpButton != null) heightUpButton.onClick.AddListener(() => gm.Station.NudgeHeight(0.05f));
+            if (heightDownButton != null) heightDownButton.onClick.AddListener(() => gm.Station.NudgeHeight(-0.05f));
+            if (autoHeightButton != null) autoHeightButton.onClick.AddListener(gm.Station.AutoHeight);
             mrButton.onClick.AddListener(passthrough.Toggle);
-            deskButton.onClick.AddListener(gm.Station.ReturnToDesk);
-            fitButton.onClick.AddListener(gm.Station.FitDeskToHead);
+            passthrough.Changed += Refresh;
+            gm.Queue.Changed += Refresh;
+            deskButton.onClick.AddListener(() => { gm.Station.ReturnToDesk(); gm.Station.CorrectHeight(false); gm.Station.FitDeskToHead(); });
+            settingsButton.onClick.AddListener(() => { if (SettingsWindow.Instance != null) SettingsWindow.Instance.Open(); gm.Station.ReturnToDesk(); });
             holdButton.onClick.AddListener(() => { gm.Queue.Hold = !gm.Queue.Hold; Refresh(); });
+            // The wrist menu is always the closest thing to you: draw it over every other panel (tutorial, settings).
+            var canvas = panel.GetComponent<Canvas>();
+            if (canvas != null) canvas.sortingOrder = 60;
             panel.SetActive(false);
             Refresh();
         }
@@ -53,19 +53,27 @@ namespace AIManagerWorkspace
         private void Refresh()
         {
             GameManager gm = GameManager.Instance;
-            demoLabel.text = gm.Dispatcher.AutoDispatch ? "DEMO: ON" : "DEMO: OFF";
-            layoutLabel.text = WorkspaceLayout.DisplayName(gm.Layout.Current).ToUpperInvariant();
-            int waiting = gm.Queue.Waiting.Count;
+
+            int waiting = gm.Queue.WaitingTotal;
             holdLabel.text = gm.Queue.Hold ? $"RESUME QUEUE ({waiting} waiting)" : "HOLD QUEUE";
         }
 
         private void LateUpdate()
         {
+            Handedness wanted = AppSettings.Current.menuOnRightHand ? Handedness.Right : Handedness.Left;
+            if (wanted != menuHand)
+            {
+                menuHand = wanted;
+                left = null;
+                nextSearch = 0f;
+                var filter = GetComponent<HandednessFilter>();
+                if (filter != null) filter.Allowed = wanted == Handedness.Left ? Handedness.Right : Handedness.Left;
+            }
             if (left == null && Time.unscaledTime > nextSearch)
             {
                 nextSearch = Time.unscaledTime + 2f;
                 foreach (var h in FindObjectsByType<Hand>(FindObjectsInactive.Exclude))
-                    if (h.Handedness == Handedness.Left) { left = h; break; }
+                    if (h.Handedness == menuHand) { left = h; break; }
             }
 
             Transform head = Camera.main != null ? Camera.main.transform : null;
@@ -76,8 +84,9 @@ namespace AIManagerWorkspace
                 && left.GetJointPose(HandJointId.HandIndex1, out Pose index)
                 && left.GetJointPose(HandJointId.HandPinky1, out Pose pinky))
             {
-                // Left hand: this cross product points out of the palm.
+                // Left hand: this cross product points out of the palm (flipped for the right hand).
                 Vector3 normal = Vector3.Cross(index.position - wrist.position, pinky.position - wrist.position).normalized;
+                if (menuHand == Handedness.Right) normal = -normal;
                 Vector3 toHead = (head.position - palm.position).normalized;
                 show = Vector3.Dot(normal, toHead) > showDot;
             }

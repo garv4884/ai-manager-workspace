@@ -97,11 +97,12 @@ namespace AIManagerWorkspace
             if (task.isWrapUp) return AIResult.Report(task.output);
 
             Template t = task.template;
+            if (t != null && string.IsNullOrEmpty(t.title)) t = null;   // empty after a JSON round-trip
             bool firstPass = !task.askedOnce && task.revision == 1;
 
             if (firstPass && task.type == TaskType.NeedsChoice)
             {
-                string[] opts = t?.options ?? RoleOptions(agent.agentRole);
+                string[] opts = t?.options != null && t.options.Length >= 2 ? t.options : RoleOptions(agent.agentRole);
                 string q = t != null && !string.IsNullOrEmpty(t.question) ? t.question : $"Which direction should I take for \"{task.title}\"?";
                 return AIResult.Choice(q, opts);
             }

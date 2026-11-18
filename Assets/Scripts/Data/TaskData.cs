@@ -77,6 +77,16 @@ namespace AIManagerWorkspace
         public bool isWrapUp;
         public List<PlannedTask> plan = new List<PlannedTask>();
 
+        /// <summary>Short guided task (tutorial): the agent works for ~2 s.</summary>
+        public bool quick;
+
+        /// <summary>True when the request came from a real agent over the bridge.</summary>
+        public bool isExternal;
+        /// <summary>Bridge request id (decisions are sent back with it).</summary>
+        public string externalId;
+        /// <summary>Bridge task id the request belongs to (the taskId of a task sent from VR).</summary>
+        public string externalTaskId;
+
         /// <summary>Offline-simulation content, filled from the task library.</summary>
         public TaskLibrary.Template template;
 

@@ -69,6 +69,8 @@ namespace AIManagerWorkspace
         {
             Workstation ws = Target;
             if (activeInteractor == null || ws == null || !TryFloorPoint(out Vector3 p)) return;
+            // Pinching an agent that is away from its desk (in line, presenting, walking) only selects it.
+            if (agent != null && !agent.IsSeated) return;
 
             if (!dragging)
             {

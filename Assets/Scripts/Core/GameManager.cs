@@ -20,6 +20,7 @@ namespace AIManagerWorkspace
         [SerializeField] private TextInputService keyboard;
         [SerializeField] private ManagerStation station;
         [SerializeField] private SessionStore session;
+        [SerializeField] private AgentBridgeClient bridge;
 
         public AgentManager Agents => agentManager;
         public QueueManager Queue => queueManager;
@@ -30,6 +31,7 @@ namespace AIManagerWorkspace
         public TextInputService Keyboard => keyboard;
         public ManagerStation Station => station;
         public SessionStore Session => session;
+        public AgentBridgeClient Bridge => bridge;
 
         private void Awake()
         {
@@ -42,8 +44,10 @@ namespace AIManagerWorkspace
 
         private void OnPresenterReady(AgentController agent)
         {
+            if (agent.ApplyPendingCancel()) return;
+            if (keyboard.IsOpen && !keyboard.IsOpenFor(agent)) return;   // never wipe what the manager is typing
             // An open question can only be answered by typing, so bring the keyboard up straight away.
-            if (agent.CurrentTask != null && agent.CurrentTask.request == RequestKind.Question)
+            if (AppSettings.Current.autoKeyboardForQuestions && agent.CurrentTask != null && agent.CurrentTask.request == RequestKind.Question)
                 foreach (var a in agent.AvailableActions())
                     if (a.type == ManagerActionType.Answer) { Perform(a); break; }
         }

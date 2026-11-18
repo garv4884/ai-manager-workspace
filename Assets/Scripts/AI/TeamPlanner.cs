@@ -108,7 +108,19 @@ namespace AIManagerWorkspace
                 planId = brief.id,
                 output = TaskLibrary.WrapUpText(brief.goal, brief.tasks)
             };
+            if (brief.lead == null || !GameManager.Instance.Agents.Contains(brief.lead))
+                brief.lead = PickLead(GameManager.Instance.Agents.Agents);
+            if (brief.lead == null) { brief.wrappedUp = true; Changed?.Invoke(); return; }
             brief.lead.AssignTask(wrap);
+        }
+
+        /// <summary>Ends a brief early (its plan was dropped or its lead left before planning).</summary>
+        public void CloseBrief(string planId)
+        {
+            Brief brief = Find(planId);
+            if (brief == null) return;
+            brief.wrappedUp = true;
+            Changed?.Invoke();
         }
 
         /// <summary>Tasks handed out for a brief (used for the wrap-up report).</summary>
@@ -141,6 +153,7 @@ namespace AIManagerWorkspace
             {
                 int load = a.BacklogCount + (a.CurrentTask != null ? 1 : 0);
                 if (a.CanTakeTask) load = -1;
+                if (a.Data.IsLinked) load += 1000;
                 if (load < bestLoad) { bestLoad = load; best = a; }
             }
             return best;

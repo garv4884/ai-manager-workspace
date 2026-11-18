@@ -15,11 +15,14 @@ namespace AIManagerWorkspace
         [MenuItem("Tools/AI Manager/Create Agent Prefab")]
         public static GameObject CreateAgentPrefab()
         {
-            Material shirt = Mat("Agent_Shirt", new Color(0.6f, 0.6f, 0.65f), 0.2f);
-            Material trousers = Mat("Agent_Trousers", new Color(0.22f, 0.23f, 0.27f), 0.2f);
-            Material skin = Mat("Agent_Skin", Palette.Skin, 0.35f);
-            Material visor = Mat("Agent_Visor", new Color(0.08f, 0.09f, 0.11f), 0.9f, 0.2f);
-            Material accent = Mat("Agent_Accent", new Color(0.4f, 0.4f, 0.45f), 0.4f);
+            // Friendly robot: glossy white shell, graphite joints, team-colour panels, a screen face.
+            Material shell = Mat("Agent_Shell", new Color(0.93f, 0.94f, 0.96f), 0.72f);
+            Material joint = Mat("Agent_Joint", new Color(0.19f, 0.2f, 0.23f), 0.45f, 0.3f);
+            Material tint = Mat("Agent_Tint", new Color(0.6f, 0.6f, 0.65f), 0.5f);
+            Material screen = Mat("Agent_FaceScreen", new Color(0.03f, 0.035f, 0.05f), 0.95f, 0.1f);
+            Material eye = Emissive("Agent_Eye", new Color(0.75f, 0.95f, 1f), 1.4f);
+            Material light = Emissive("Agent_Antenna", Palette.Teal, 2f);
+            Material halo = Emissive("Agent_LinkHalo", Palette.Teal, 2.4f);
             Material ring = Emissive("Agent_SelectionRing", Palette.Teal, 2.2f);
 
             var root = new GameObject("AgentNPC");
@@ -31,32 +34,58 @@ namespace AIManagerWorkspace
             Transform Leg(string n, float x)
             {
                 var pivot = Empty(n, body.transform, new Vector3(x, 0.92f, 0f)).transform;
-                Capsule($"{n}_Mesh", pivot, new Vector3(0f, -0.45f, 0f), new Vector3(0.15f, 0.45f, 0.15f), trousers);
-                Box($"{n}_Shoe", pivot, new Vector3(0f, -0.88f, 0.05f), new Vector3(0.13f, 0.07f, 0.24f), visor, false);
+                Ball($"{n}_Hip", pivot, Vector3.zero, Vector3.one * 0.13f, joint);
+                Capsule($"{n}_Mesh", pivot, new Vector3(0f, -0.44f, 0f), new Vector3(0.14f, 0.42f, 0.14f), shell);
+                Ball($"{n}_Shoe", pivot, new Vector3(0f, -0.87f, 0.04f), new Vector3(0.15f, 0.09f, 0.25f), joint);
                 return pivot;
             }
             Transform legL = Leg("LegL", -0.1f);
             Transform legR = Leg("LegR", 0.1f);
 
-            var torso = Capsule("Torso", body.transform, new Vector3(0f, 1.23f, 0f), new Vector3(0.38f, 0.34f, 0.25f), shirt);
-            var collar = Box("Collar", body.transform, new Vector3(0f, 1.5f, 0.0f), new Vector3(0.22f, 0.05f, 0.16f), accent, false);
-            var badge = Box("Badge", body.transform, new Vector3(0.09f, 1.36f, 0.122f), new Vector3(0.07f, 0.05f, 0.01f), accent, false);
+            Cyl("Waist", body.transform, new Vector3(0f, 0.98f, 0f), 0.17f, 0.08f, joint, false);
+            Capsule("Torso", body.transform, new Vector3(0f, 1.24f, 0f), new Vector3(0.42f, 0.33f, 0.3f), shell);
+            var chest = Ball("ChestPanel", body.transform, new Vector3(0f, 1.3f, 0.115f), new Vector3(0.27f, 0.2f, 0.08f), tint);
+            var core = Ball("CoreLight", body.transform, new Vector3(0f, 1.3f, 0.152f), new Vector3(0.05f, 0.05f, 0.02f), light);
 
-            Transform Arm(string n, float x)
+            Transform Arm(string n, float x, out Renderer sleeve)
             {
                 var pivot = Empty(n, body.transform, new Vector3(x, 1.45f, 0f)).transform;
-                Capsule($"{n}_Mesh", pivot, new Vector3(0f, -0.27f, 0f), new Vector3(0.1f, 0.27f, 0.1f), shirt);
-                Ball($"{n}_Hand", pivot, new Vector3(0f, -0.56f, 0f), Vector3.one * 0.09f, skin);
+                Ball($"{n}_Shoulder", pivot, Vector3.zero, Vector3.one * 0.105f, joint);
+                sleeve = Capsule($"{n}_Mesh", pivot, new Vector3(0f, -0.26f, 0f), new Vector3(0.1f, 0.25f, 0.1f), tint).GetComponent<Renderer>();
+                Ball($"{n}_Hand", pivot, new Vector3(0f, -0.55f, 0f), new Vector3(0.1f, 0.11f, 0.08f), shell);
                 return pivot;
             }
-            Transform armL = Arm("ArmL", -0.25f);
-            Transform armR = Arm("ArmR", 0.25f);
+            Transform armL = Arm("ArmL", -0.27f, out var sleeveL);
+            Transform armR = Arm("ArmR", 0.27f, out var sleeveR);
 
             var head = Empty("Head", body.transform, new Vector3(0f, 1.56f, 0f)).transform;
-            Capsule("Neck", head, new Vector3(0f, 0.02f, 0f), new Vector3(0.09f, 0.05f, 0.09f), skin);
-            Ball("Skull", head, new Vector3(0f, 0.16f, 0f), new Vector3(0.25f, 0.27f, 0.25f), skin);
-            Box("Visor", head, new Vector3(0f, 0.18f, 0.105f), new Vector3(0.2f, 0.06f, 0.06f), visor, false);
-            var antenna = Ball("Antenna", head, new Vector3(0f, 0.33f, 0f), Vector3.one * 0.06f, accent);
+            Cyl("Neck", head, new Vector3(0f, 0.03f, 0f), 0.05f, 0.08f, joint, false);
+            Ball("Skull", head, new Vector3(0f, 0.18f, 0f), new Vector3(0.32f, 0.27f, 0.29f), shell);
+            Ball("FaceScreen", head, new Vector3(0f, 0.18f, 0.105f), new Vector3(0.25f, 0.17f, 0.09f), screen);
+            var earL = Cyl("EarL", head, new Vector3(-0.162f, 0.18f, 0f), 0.06f, 0.04f, tint, false, new Vector3(0f, 0f, 90f));
+            var earR = Cyl("EarR", head, new Vector3(0.162f, 0.18f, 0f), 0.06f, 0.04f, tint, false, new Vector3(0f, 0f, 90f));
+            Cyl("AntennaStalk", head, new Vector3(0f, 0.35f, 0f), 0.012f, 0.09f, joint, false);
+            var antenna = Ball("AntennaLight", head, new Vector3(0f, 0.41f, 0f), Vector3.one * 0.055f, light);
+            var linkHalo = Cyl("LinkHalo", head, new Vector3(0f, 0.47f, 0f), 0.13f, 0.008f, halo, false);
+            linkHalo.SetActive(false);
+
+            var face = Empty("Face", head, new Vector3(0f, 0.185f, 0.152f)).transform;
+            var eyeL = Ball("EyeL", face, new Vector3(-0.045f, 0f, 0f), new Vector3(0.036f, 0.05f, 0.012f), eye);
+            var eyeR = Ball("EyeR", face, new Vector3(0.045f, 0f, 0f), new Vector3(0.036f, 0.05f, 0.012f), eye);
+            var glyphGO = new GameObject("FaceGlyph");
+            glyphGO.transform.SetParent(face, false);
+            glyphGO.transform.localPosition = new Vector3(0f, 0f, 0.004f);
+            glyphGO.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
+            var glyph = glyphGO.AddComponent<TextMeshPro>();
+            glyph.text = "^ ^";
+            glyph.fontSize = 0.75f;
+            glyph.fontStyle = FontStyles.Bold;
+            glyph.alignment = TextAlignmentOptions.Center;
+            glyph.textWrappingMode = TextWrappingModes.NoWrap;
+            glyph.rectTransform.sizeDelta = new Vector2(0.22f, 0.12f);
+            if (UiFont.Bold != null) glyph.font = UiFont.Bold;
+            glyphGO.SetActive(false);
+            foreach (var r in new[] { eyeL, eyeR, antenna, core, linkHalo }) NoShadows(r);
 
             var hold = Empty("HoldPoint", body.transform, new Vector3(0f, 1.02f, 0.36f), new Vector3(30f, 180f, 0f)).transform;
 
@@ -68,14 +97,14 @@ namespace AIManagerWorkspace
             Wire(avatar, "armR", armR);
             Wire(avatar, "head", head);
             Wire(avatar, "holdPoint", hold);
-            WireArray(avatar, "shirtRenderers", new Object[]
-            {
-                torso.GetComponent<Renderer>(), armL.GetChild(0).GetComponent<Renderer>(), armR.GetChild(0).GetComponent<Renderer>()
-            });
-            WireArray(avatar, "accentRenderers", new Object[]
-            {
-                collar.GetComponent<Renderer>(), badge.GetComponent<Renderer>(), antenna.GetComponent<Renderer>()
-            });
+            Wire(avatar, "eyeL", eyeL.transform);
+            Wire(avatar, "eyeR", eyeR.transform);
+            WireArray(avatar, "eyeRenderers", new Object[] { eyeL.GetComponent<Renderer>(), eyeR.GetComponent<Renderer>() });
+            Wire(avatar, "faceGlyph", glyph);
+            Wire(avatar, "antennaLight", antenna.GetComponent<Renderer>());
+            Wire(avatar, "linkBadge", linkHalo);
+            WireArray(avatar, "shirtRenderers", new Object[] { chest.GetComponent<Renderer>(), sleeveL, sleeveR });
+            WireArray(avatar, "accentRenderers", new Object[] { earL.GetComponent<Renderer>(), earR.GetComponent<Renderer>() });
 
             var selection = Cyl("SelectionRing", root.transform, new Vector3(0f, 0.012f, 0f), 0.5f, 0.012f, ring, false);
             NoShadows(selection);
@@ -148,19 +177,32 @@ namespace AIManagerWorkspace
 
         public static OutputPage BuildPage(Transform hold)
         {
-            var canvas = WorldCanvas("Page", hold, Vector3.zero, Vector3.zero, new Vector2(500f, 660f), 0.00085f);
+            // A wide sheet: title and meta on top, a scrolling body, the gesture hint at the bottom.
+            const float W = 880f, H = 640f;
+            var canvas = WorldCanvas("Page", hold, Vector3.zero, Vector3.zero, new Vector2(W, H), 0.00085f);
             Transform t = canvas.transform;
-            Panel("Paper", t, Vector2.zero, new Vector2(500f, 660f), Palette.Paper);
-            var header = Panel("Header", t, new Vector2(0f, 312f), new Vector2(500f, 36f), Palette.Amber);
-            var title = Text("Title", t, "Task", 34f, new Color(0.12f, 0.13f, 0.15f), new Vector2(0f, 258f), new Vector2(450f, 56f), TextAlignmentOptions.Left, true);
-            title.enableAutoSizing = true; title.fontSizeMin = 24f; title.fontSizeMax = 38f;
-            var meta = Text("Meta", t, "", 21f, new Color(0.38f, 0.40f, 0.44f), new Vector2(0f, 222f), new Vector2(450f, 30f));
-            Panel("Rule", t, new Vector2(0f, 202f), new Vector2(450f, 2f), new Color(0.82f, 0.80f, 0.76f), false);
-            var bodyText = Text("Body", t, "", 22f, new Color(0.14f, 0.15f, 0.17f), new Vector2(0f, -30f), new Vector2(450f, 440f), TextAlignmentOptions.TopLeft);
-            bodyText.enableAutoSizing = true; bodyText.fontSizeMin = 16f; bodyText.fontSizeMax = 28f;
+            Panel("Paper", t, Vector2.zero, new Vector2(W, H), Palette.Paper);
+            var header = Panel("Header", t, new Vector2(0f, H * 0.5f - 16f), new Vector2(W, 32f), Palette.Amber);
+            var title = Text("Title", t, "Task", 36f, new Color(0.12f, 0.13f, 0.15f), new Vector2(0f, 252f), new Vector2(W - 70f, 56f), TextAlignmentOptions.Left, true);
+            title.enableAutoSizing = true; title.fontSizeMin = 28f; title.fontSizeMax = 42f;
+            var meta = Text("Meta", t, "", 23f, new Color(0.38f, 0.40f, 0.44f), new Vector2(0f, 214f), new Vector2(W - 70f, 30f));
+            Panel("Rule", t, new Vector2(0f, 194f), new Vector2(W - 70f, 2f), new Color(0.82f, 0.80f, 0.76f), false);
+
+            var viewport = new GameObject("Viewport", typeof(RectTransform), typeof(RectMask2D)).GetComponent<RectTransform>();
+            viewport.SetParent(t, false);
+            viewport.anchoredPosition = new Vector2(0f, -36f);
+            viewport.sizeDelta = new Vector2(W - 70f, 440f);
+            var bodyText = Text("Body", viewport, "", 30f, new Color(0.14f, 0.15f, 0.17f), Vector2.zero, new Vector2(W - 70f, 440f), TextAlignmentOptions.TopLeft);
+            var brt = bodyText.rectTransform;
+            brt.anchorMin = new Vector2(0f, 1f); brt.anchorMax = new Vector2(1f, 1f); brt.pivot = new Vector2(0.5f, 1f);
+            brt.offsetMin = new Vector2(0f, brt.offsetMin.y); brt.offsetMax = new Vector2(0f, brt.offsetMax.y);
+            brt.anchoredPosition = Vector2.zero;
+            brt.sizeDelta = new Vector2(0f, 440f);
+            bodyText.overflowMode = TextOverflowModes.Overflow;
             bodyText.lineSpacing = 4f;
-            Panel("PromptBand", t, new Vector2(0f, -294f), new Vector2(480f, 52f), new Color(0.90f, 0.88f, 0.84f));
-            var prompt = Text("Prompt", t, "", 19f, new Color(0.30f, 0.32f, 0.36f), new Vector2(0f, -294f), new Vector2(460f, 48f), TextAlignmentOptions.Center, true);
+            var more = Text("More", t, "", 15f, new Color(0.55f, 0.45f, 0.25f), new Vector2(0f, -263f), new Vector2(W - 70f, 22f), TextAlignmentOptions.Right, true);
+            Panel("PromptBand", t, new Vector2(0f, -294f), new Vector2(W - 30f, 44f), new Color(0.90f, 0.88f, 0.84f));
+            var prompt = Text("Prompt", t, "", 19f, new Color(0.30f, 0.32f, 0.36f), new Vector2(0f, -294f), new Vector2(W - 60f, 40f), TextAlignmentOptions.Center, true);
 
             var page = canvas.gameObject.AddComponent<OutputPage>();
             Wire(page, "titleText", title);
@@ -168,6 +210,8 @@ namespace AIManagerWorkspace
             Wire(page, "bodyText", bodyText);
             Wire(page, "promptText", prompt);
             Wire(page, "headerBar", header);
+            Wire(page, "viewport", viewport);
+            Wire(page, "moreHint", more);
             return page;
         }
     }

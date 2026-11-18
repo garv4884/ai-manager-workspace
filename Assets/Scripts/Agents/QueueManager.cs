@@ -20,6 +20,9 @@ namespace AIManagerWorkspace
         [SerializeField] private ReviewDesk reviewDesk;
 
         private readonly List<AgentController> waiting = new List<AgentController>();
+        /// <summary>Agents that need you but wait at their desk until the line has room (keeps the line short and calm).</summary>
+        private readonly List<AgentController> held = new List<AgentController>();
+        private float lastJoin = -999f;
 
         public AgentController Presenter { get; private set; }
         public bool IsPresenterReady { get; private set; }
@@ -42,7 +45,10 @@ namespace AIManagerWorkspace
         }
         private bool hold;
 
-        public int PendingCount => waiting.Count + (Presenter != null ? 1 : 0);
+        public int PendingCount => waiting.Count + held.Count + (Presenter != null ? 1 : 0);
+        /// <summary>Everyone waiting for you: in line plus waiting at their desks.</summary>
+        public int WaitingTotal => waiting.Count + held.Count;
+        public bool IsHeldAtDesk(AgentController agent) => held.Contains(agent);
 
         public Quaternion LineFacing => Quaternion.LookRotation(-queueStart.forward);
 
@@ -58,19 +64,72 @@ namespace AIManagerWorkspace
             return queueStart.position + queueStart.forward * (spacing * index);
         }
 
+        /// <summary>
+        /// An agent needs you. It walks to the line only when there is room (Settings > General > Review flow:
+        /// at most N waiting in line, one new arrival every few seconds); otherwise it waits at its desk.
+        /// </summary>
         public void Enqueue(AgentController agent)
         {
-            if (agent == null || waiting.Contains(agent) || agent == Presenter) return;
+            if (agent == null || waiting.Contains(agent) || held.Contains(agent) || agent == Presenter) return;
+            if (CanJoinNow) Join(agent);
+            else { held.Add(agent); agent.NotifyChanged(); Changed?.Invoke(); }
+        }
+
+        private bool CanJoinNow =>
+            waiting.Count < Mathf.Max(1, AppSettings.Current.maxInLine) &&
+            Time.time - lastJoin >= AppSettings.Current.ArrivalGapSeconds;
+
+        private void Join(AgentController agent)
+        {
+            held.Remove(agent);
             waiting.Add(agent);
+            lastJoin = Time.time;
             RefreshPositions();
             agent.GoToQueueSlot(this);
             Changed?.Invoke();
             TryAdvance();
         }
 
+        private void Update()
+        {
+            if (held.Count == 0 || !CanJoinNow) return;
+            AgentController next = held[0];
+            if (next == null) { held.RemoveAt(0); return; }
+            Join(next);
+        }
+
+        /// <summary>True while the agent waits (in line or at its desk) or is on the lift.</summary>
+        public bool IsInLine(AgentController agent) => agent != null && (waiting.Contains(agent) || held.Contains(agent) || Presenter == agent);
+
+        /// <summary>
+        /// Takes an agent out of the line without a decision (its request was cancelled by the real agent,
+        /// e.g. answered in the terminal). Returns false if the agent is mid-presentation and can't leave yet.
+        /// </summary>
+        public bool Withdraw(AgentController agent, AgentStatus newStatus)
+        {
+            if (held.Remove(agent))
+            {
+                agent.AfterDecision(newStatus, true, null);
+                Changed?.Invoke();
+                return true;
+            }
+            if (waiting.Remove(agent))
+            {
+                RefreshPositions();
+                agent.AfterDecision(newStatus, true, null);
+                Changed?.Invoke();
+                return true;
+            }
+            if (agent == Presenter && IsPresenterReady)
+                return FinishPresenting(agent, PageExit.Discard, null, newStatus, clearTask: true);
+            return false;
+        }
+
         /// <summary>Moves a waiting agent to the front of the line ("review next").</summary>
         public void PromoteToFront(AgentController agent)
         {
+            int h = held.IndexOf(agent);
+            if (h > 0) { held.RemoveAt(h); held.Insert(0, agent); Changed?.Invoke(); return; }
             int i = waiting.IndexOf(agent);
             if (i <= 0) return;
             waiting.RemoveAt(i);

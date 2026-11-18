@@ -23,14 +23,25 @@ namespace AIManagerWorkspace
             layer = FindAnyObjectByType<OVRPassthroughLayer>(FindObjectsInactive.Include);
             cam = Camera.main;
             if (cam != null) { originalFlags = cam.clearFlags; originalColor = cam.backgroundColor; }
+            IsMixedReality = AppSettings.Current.mixedReality;
             Apply();
         }
 
-        public void Toggle()
+        public void Toggle() => Set(!IsMixedReality);
+
+        public void Set(bool mixedReality)
         {
-            IsMixedReality = !IsMixedReality;
+            IsMixedReality = mixedReality;
             Apply();
+            if (AppSettings.Current.mixedReality != mixedReality)
+            {
+                AppSettings.Current.mixedReality = mixedReality;
+                AppSettings.Save();
+            }
+            Changed?.Invoke();
         }
+
+        public event System.Action Changed;
 
         private void Apply()
         {

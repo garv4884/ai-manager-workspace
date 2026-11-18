@@ -46,11 +46,11 @@ namespace AIManagerWorkspace
             switch (type)
             {
                 case LayoutType.Grid: Grid(list, count, center); break;
-                case LayoutType.Circle: Ring(list, count, center, Mathf.Max(7.0f, count * 1.1f), 22f); break;
+                case LayoutType.Circle: Ring(list, count, center, count > 8 ? 7.4f : 7.0f, count > 8 ? 20f : 22f); break;
                 case LayoutType.UShape: UShape(list, count, center); break;
                 case LayoutType.HubSpoke: Pods(list, count, center); break;
                 case LayoutType.Coworking: Coworking(list, count, center); break;
-                case LayoutType.WarRoom: Ring(list, count, center, 5.2f, 30f); break;
+                case LayoutType.WarRoom: Ring(list, count, center, count > 7 ? 5.8f : 5.2f, 30f); break;
                 default: Grid(list, count, center); break;
             }
             return list;
@@ -88,23 +88,34 @@ namespace AIManagerWorkspace
 
         private static void UShape(List<DeskPose> list, int count, Vector3 c)
         {
+            if (count <= 2)
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    Vector3 p = c + new Vector3(count == 1 ? 0f : (i == 0 ? -2.6f : 2.6f), 0f, 7.6f);
+                    list.Add(new DeskPose(p, Facing(p, c)));
+                }
+                return;
+            }
             int side = Mathf.Max(1, Mathf.RoundToInt(count / 3f));
             int back = count - side * 2;
-            Vector3 focus = c + new Vector3(0f, 0f, 7.5f);
+            float spacing = side <= 2 ? 2.8f : 2.35f;
+            float backZ = Mathf.Min(12.2f, 5.6f + side * spacing + 0.6f);
+            float halfWidth = back > 3 ? 3.9f : 2.8f;
             for (int i = 0; i < side; i++)
             {
-                Vector3 p = c + new Vector3(-6.2f, 0f, 5.6f + i * 2.8f);
+                Vector3 p = c + new Vector3(-6.2f, 0f, 5.6f + i * spacing);
                 list.Add(new DeskPose(p, Facing(p, new Vector3(c.x, 0f, p.z))));
             }
             for (int i = 0; i < back; i++)
             {
-                float x = back == 1 ? 0f : Mathf.Lerp(-2.8f, 2.8f, i / (float)(back - 1));
-                Vector3 p = c + new Vector3(x, 0f, 5.6f + side * 2.8f + 0.8f);
+                float x = back == 1 ? 0f : Mathf.Lerp(-halfWidth, halfWidth, i / (float)(back - 1));
+                Vector3 p = c + new Vector3(x, 0f, backZ);
                 list.Add(new DeskPose(p, Facing(p, c)));
             }
             for (int i = 0; i < side; i++)
             {
-                Vector3 p = c + new Vector3(6.2f, 0f, 5.6f + i * 2.8f);
+                Vector3 p = c + new Vector3(6.2f, 0f, 5.6f + i * spacing);
                 list.Add(new DeskPose(p, Facing(p, new Vector3(c.x, 0f, p.z))));
             }
         }
@@ -133,13 +144,14 @@ namespace AIManagerWorkspace
             {
                 new Vector3(-3.4f, 0f, 6.4f), new Vector3(3.6f, 0f, 5.8f), new Vector3(-7.2f, 0f, 9.0f),
                 new Vector3(6.8f, 0f, 8.6f), new Vector3(-2.6f, 0f, 11.4f), new Vector3(3.2f, 0f, 12.0f),
-                new Vector3(-8.2f, 0f, 3.0f), new Vector3(8.4f, 0f, 2.6f)
+                new Vector3(-8.2f, 0f, 3.0f), new Vector3(8.4f, 0f, 2.6f),
+                new Vector3(-5.8f, 0f, 12.4f), new Vector3(6.4f, 0f, 12.0f)
             };
-            float[] twist = { 18f, -14f, 30f, -26f, 8f, -12f, 40f, -38f };
+            float[] twist = { 18f, -14f, 30f, -26f, 8f, -12f, 40f, -38f, 20f, -22f };
             for (int i = 0; i < count; i++)
             {
                 int k = i % spots.Length;
-                Vector3 p = c + spots[k] + (i >= spots.Length ? new Vector3(0f, 0f, 3f) : Vector3.zero);
+                Vector3 p = c + spots[k] + (i >= spots.Length ? new Vector3(0f, 0f, 1.6f) : Vector3.zero);
                 list.Add(new DeskPose(p, Facing(p, c) * Quaternion.Euler(0f, twist[k], 0f)));
             }
         }
