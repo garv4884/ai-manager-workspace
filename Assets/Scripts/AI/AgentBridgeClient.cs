@@ -1,6 +1,8 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using UnityEngine;
 using UnityEngine.Networking;
@@ -36,6 +38,20 @@ namespace AIManagerWorkspace
         private readonly Dictionary<string, AgentInfo> known = new Dictionary<string, AgentInfo>(StringComparer.OrdinalIgnoreCase);
         private readonly List<(AgentInfo agent, RequestInfo request)> unplaced = new List<(AgentInfo, RequestInfo)>();
 
+        /// <summary>A PC on the Wi-Fi that answered the discovery broadcast.</summary>
+        public class PcInfo { public string name; public string host; public int port; public string Url => $"http://{host}:{port}"; }
+
+        private const int DiscoveryPort = 8788;
+        private readonly List<PcInfo> found = new List<PcInfo>();
+        private Coroutine scanLoop;
+        private bool pairing;
+
+        public IReadOnlyList<PcInfo> Found => found;
+        /// <summary>True once this headset holds a pairing token (so it reconnects by itself).</summary>
+        public bool Paired => !string.IsNullOrEmpty(token);
+        public string PairMessage { get; private set; } = "";
+        public bool Pairing => pairing;
+
         public bool Connected { get; private set; }
         public string Url => url;
         public int LinkedCount => links.Count;
@@ -46,7 +62,112 @@ namespace AIManagerWorkspace
         {
             GameManager.Instance.AI.ConfigChanged += Reconfigure;
             Reconfigure();
+            scanLoop = StartCoroutine(ScanLoop());
         }
+
+        // ── Finding the PC and pairing (no IP address, no token to type) ─────────
+
+        /// <summary>Look for bridges on the Wi-Fi now (also runs by itself while not connected).</summary>
+        public void Rescan() { if (scanLoop != null) { StopCoroutine(scanLoop); } scanLoop = StartCoroutine(ScanLoop(true)); }
+
+        private IEnumerator ScanLoop(bool immediate = false)
+        {
+            if (!immediate) yield return new WaitForSecondsRealtime(2f);
+            while (true)
+            {
+                if (!Connected)
+                {
+                    var task = System.Threading.Tasks.Task.Run(() => DiscoverBlocking(1200));
+                    while (!task.IsCompleted) yield return null;
+                    if (!task.IsFaulted)
+                    {
+                        found.Clear();
+                        found.AddRange(task.Result);
+                        if (Paired) yield return AdoptPairedPc();
+                        StateChanged?.Invoke();
+                    }
+                }
+                yield return new WaitForSecondsRealtime(Connected ? 6f : 4f);
+            }
+        }
+
+        private static List<PcInfo> DiscoverBlocking(int ms)
+        {
+            var list = new List<PcInfo>();
+            try
+            {
+                using var udp = new UdpClient { EnableBroadcast = true };
+                udp.Client.ReceiveTimeout = 300;
+                byte[] ping = Encoding.ASCII.GetBytes("AIM?");
+                udp.Send(ping, ping.Length, new IPEndPoint(IPAddress.Broadcast, DiscoveryPort));
+                DateTime end = DateTime.UtcNow.AddMilliseconds(ms);
+                while (DateTime.UtcNow < end)
+                {
+                    try
+                    {
+                        var from = new IPEndPoint(IPAddress.Any, 0);
+                        string text = Encoding.UTF8.GetString(udp.Receive(ref from));
+                        if (!(MiniJson.Parse(text) is Dictionary<string, object> d) || !d.ContainsKey("aim")) continue;
+                        string host = from.Address.ToString();
+                        if (list.Exists(x => x.host == host)) continue;
+                        list.Add(new PcInfo { name = Str(d, "name"), host = host, port = d.TryGetValue("port", out var po) ? Convert.ToInt32(po) : 8787 });
+                    }
+                    catch (SocketException) { }
+                }
+            }
+            catch (Exception e) { Debug.LogWarning($"[Bridge] Discovery failed: {e.Message}"); }
+            return list;
+        }
+
+        /// <summary>Paired already but the PC got a new address (router renewed it): follow it.</summary>
+        private IEnumerator AdoptPairedPc()
+        {
+            foreach (var pc in new List<PcInfo>(found))
+            {
+                if (pc.Url == url) continue;
+                using var req = UnityWebRequest.Get(pc.Url + "/api/state");
+                req.timeout = 4;
+                Auth(req);
+                yield return req.SendWebRequest();
+                if (req.result != UnityWebRequest.Result.Success) continue;
+                Debug.Log($"[Bridge] PC moved to {pc.Url}");
+                GameManager.Instance.AI.SetBridge(pc.Url, token);
+                yield break;
+            }
+        }
+
+        /// <summary>Pairs with a PC using the 6-digit code its bridge window shows. On success the address and
+        /// token are saved, so the headset reconnects by itself from now on.</summary>
+        public void Pair(PcInfo pc, string code) { if (!pairing) StartCoroutine(PairRoutine(pc, (code ?? "").Replace(" ", "").Trim())); }
+
+        private IEnumerator PairRoutine(PcInfo pc, string code)
+        {
+            pairing = true;
+            PairMessage = "Pairing...";
+            StateChanged?.Invoke();
+            using var req = new UnityWebRequest(pc.Url + "/api/pair", "POST");
+            req.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes("{" + $"\"code\":{MiniJson.Quote(code)}" + "}"));
+            req.downloadHandler = new DownloadHandlerBuffer();
+            req.SetRequestHeader("Content-Type", "application/json");
+            req.timeout = 8;
+            yield return req.SendWebRequest();
+            pairing = false;
+            if (req.result == UnityWebRequest.Result.Success && MiniJson.Parse(req.downloadHandler.text) is Dictionary<string, object> d && d.ContainsKey("token"))
+            {
+                PairMessage = "Paired with " + pc.name + ".";
+                GameManager.Instance.AI.SetBridge(pc.Url, Str(d, "token"));
+            }
+            else
+            {
+                PairMessage = req.responseCode == 403 ? "Wrong code. Check the window on your PC."
+                            : req.responseCode == 429 ? "Too many wrong codes. Wait one minute."
+                            : "Could not reach the PC. Same Wi-Fi? Firewall allowed?";
+            }
+            StateChanged?.Invoke();
+        }
+
+        /// <summary>Forget this PC: back to automatic / USB mode.</summary>
+        public void Unpair() { GameManager.Instance.AI.SetBridge("", ""); PairMessage = ""; Rescan(); }
 
         private void Reconfigure()
         {
@@ -73,7 +194,7 @@ namespace AIManagerWorkspace
 
                 if (req.result != UnityWebRequest.Result.Success)
                 {
-                    SetConnected(false, req.responseCode == 401 ? "Bridge needs the token (LAN mode)." : "Bridge not reachable.");
+                    SetConnected(false, req.responseCode == 401 ? "This headset is not paired (or the PC unpaired it)." : "PC not found yet.");
                     yield return new WaitForSecondsRealtime(retrySeconds);
                     continue;
                 }

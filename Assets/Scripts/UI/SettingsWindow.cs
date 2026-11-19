@@ -436,30 +436,58 @@ namespace AIManagerWorkspace
             GameManager gm = GameManager.Instance;
             float y = 0f;
             Heading(p, ref y, "Real agents on your PC");
-            bridgeStatus = UiKit.Label(p, "", 18f, UiKit.Text, new Vector2(0f, -y), new Vector2(W, 56f), TextAlignmentOptions.TopLeft, false, true);
-            y += 64f;
-            var c = Row(p, ref y, "Bridge address", "Empty = over USB (127.0.0.1:8787 via adb reverse). For Wi-Fi enter your PC's IP, then the token.", 86f);
+            bridgeStatus = UiKit.Label(p, "", 18f, UiKit.Text, new Vector2(0f, -y), new Vector2(W, 64f), TextAlignmentOptions.TopLeft, false, true);
+            y += 72f;
+            var c = Row(p, ref y, "Find my PC", "Open the AI Manager Bridge on your PC (same Wi-Fi). When your PC shows up here, tap it and type the 6-digit code from its window.", 92f);
             float bw = (ControlW - 12f) / 3f;
+            var pcButtons = new Button[2];
+            var pcLabels = new TextMeshProUGUI[2];
+            for (int i = 0; i < 2; i++)
+            {
+                int index = i;
+                pcButtons[i] = UiKit.Button(p, "", c + new Vector2(i * (bw + 6f), 0f), new Vector2(bw, 48f), UiKit.Primary, () =>
+                {
+                    var list = gm.Bridge != null ? gm.Bridge.Found : null;
+                    if (list == null || index >= list.Count) return;
+                    var pc = list[index];
+                    gm.Keyboard.Open($"Pairing code shown on {pc.name} (6 digits)", this, false, code => gm.Bridge.Pair(pc, code));
+                }, out pcLabels[i], 14f, true);
+            }
+            UiKit.Button(p, "Search again", c + new Vector2(2f * (bw + 6f), 0f), new Vector2(bw, 48f), UiKit.Control, () => { if (gm.Bridge != null) gm.Bridge.Rescan(); }, out _, 14f, true);
+
+            c = Row(p, ref y, "Advanced", "Manual address and token, or forget this PC. Empty address = USB (adb reverse).", 70f);
             UiKit.Button(p, "Address", c, new Vector2(bw, 44f), UiKit.Control, () =>
                 gm.Keyboard.Open("Bridge address, e.g. 192.168.1.20:8787 (empty = USB)", this, true, url => gm.AI.SetBridge(url)), out _, 15f, true);
             UiKit.Button(p, "Token", c + new Vector2(bw + 6f, 0f), new Vector2(bw, 44f), UiKit.Control, () =>
-                gm.Keyboard.Open("Bridge token (Wi-Fi mode only; shown by aim_bridge.py --lan)", this, true,
+                gm.Keyboard.Open("Bridge token (only if you copied it from ~/.aim/token)", this, true,
                     tok => gm.AI.SetBridge(gm.AI.BridgeUrl, tok.Trim()), secretText: true), out _, 15f, true);
-            UiKit.Button(p, "Use USB", c + new Vector2(2f * (bw + 6f), 0f), new Vector2(bw, 44f), UiKit.Control, () => gm.AI.SetBridge("", ""), out _, 15f, true);
+            UiKit.Button(p, "Forget PC", c + new Vector2(2f * (bw + 6f), 0f), new Vector2(bw, 44f), UiKit.Control, () => { if (gm.Bridge != null) gm.Bridge.Unpair(); }, out _, 15f, true);
+
             UiKit.Label(p,
-                "<b>On your PC</b>\n" +
-                "1  Start it: <color=#4FD1C5>python Bridge/aim_bridge.py</color> (or Unity: Tools > AI Manager > Start bridge)\n" +
-                "2  USB: click Connect headset in that Unity window (adb reverse)\n" +
-                "3  Connect agents: Claude Code hook, MCP server, aim CLI or aim worker (see Bridge/README.md)\n\n" +
-                "Live agents get a teal halo and a LIVE tag. Their requests walk up like any other page, and your decision goes straight back to them.",
-                15f, UiKit.Muted, new Vector2(0f, -y), new Vector2(W, 200f), TextAlignmentOptions.TopLeft, false, true);
+                "<b>Setup, one time</b>\n" +
+                "1  On your PC open <color=#4FD1C5>AI Manager Bridge</color> (Bridge/AIManagerBridge.exe, or python Bridge/aim_bridge.py).\n" +
+                "2  Tap your PC above and type the code from its window. No IP address, no cable.\n" +
+                "3  Click <color=#4FD1C5>Connect Claude Code</color> in that window. Every Claude Code session then appears as an agent, and its permission prompts walk up to your desk.\n\n" +
+                "Live agents get a teal halo and a LIVE tag. Your decision goes straight back to them.",
+                15f, UiKit.Muted, new Vector2(0f, -y), new Vector2(W, 220f), TextAlignmentOptions.TopLeft, false, true);
             refreshers.Add(() =>
             {
                 var b = gm.Bridge;
                 if (b == null) { bridgeStatus.text = "Bridge client missing."; return; }
-                bridgeStatus.text = b.Connected
-                    ? $"<color=#4FD1C5><b>CONNECTED</b></color>  {b.LinkedCount} live agent(s)\n<color=#9AA3B2>{b.Url}</color>"
-                    : $"<color=#9AA3B2><b>NOT CONNECTED</b></color>  {b.LastError}\n<color=#9AA3B2>{b.Url}</color>";
+                if (b.Connected)
+                    bridgeStatus.text = $"<color=#4FD1C5><b>CONNECTED</b></color>  {b.LinkedCount} live agent(s)\n<color=#9AA3B2>{b.Url}</color>";
+                else if (b.Found.Count > 0 && !b.Paired)
+                    bridgeStatus.text = $"<color=#4FD1C5><b>PC FOUND</b></color>  tap it below and type the code\n<color=#9AA3B2>{b.PairMessage}</color>";
+                else if (b.Paired)
+                    bridgeStatus.text = $"<color=#FFB347><b>PAIRED</b></color>  looking for your PC...\n<color=#9AA3B2>{b.LastError}</color>";
+                else
+                    bridgeStatus.text = $"<color=#9AA3B2><b>LOOKING FOR YOUR PC</b></color>  same Wi-Fi, bridge open\n<color=#9AA3B2>{b.PairMessage}</color>";
+                for (int i = 0; i < 2; i++)
+                {
+                    bool has = i < b.Found.Count;
+                    pcButtons[i].gameObject.SetActive(has);
+                    if (has) pcLabels[i].text = (b.Paired ? "Re-pair " : "Pair ") + TaskLibrary.Trim(b.Found[i].name, 12);
+                }
             });
         }
 

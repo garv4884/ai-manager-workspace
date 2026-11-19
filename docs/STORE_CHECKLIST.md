@@ -11,7 +11,7 @@ Meta's requirements change, so the dashboard's own wording wins over this list.
 - [ ] Profile on a Quest 3 with OVR Metrics: steady 72 fps in the busiest layout (10 agents, war room)
 - [ ] Test: Meta button and back, sleep/wake (height fix), recenter, passthrough toggle, fresh install tutorial, clear-data first launch
 - [ ] Run the **VRC validator** in Meta Quest Developer Hub against the APK and fix what it reports
-- [ ] Re-justify cleartext HTTP: it exists only for the optional PC bridge (LAN). Consider restricting it before the store review
+- [ ] Re-justify cleartext HTTP: it exists only for the optional PC bridge on the local network (pairing code + token, UDP discovery on port 8788). Consider restricting it before the store review
 
 ## 2. App metadata tabs
 - [ ] **Name:** AI Manager Workspace

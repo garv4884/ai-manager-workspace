@@ -407,6 +407,7 @@ def main():
     p.add_argument("--kind"); p.set_defaults(fn=cmd_worker)
     p = sub.add_parser("hook"); p.add_argument("--timeout", type=float, default=540)
     p.add_argument("--report-on-stop", action="store_true", help="send a report page after every finished turn")
+    p.add_argument("--managed", action="store_true", help=argparse.SUPPRESS)   # marks hooks installed by connect-claude
     p.set_defaults(fn=cmd_hook)
     p = sub.add_parser("mcp"); p.set_defaults(fn=cmd_mcp)
 

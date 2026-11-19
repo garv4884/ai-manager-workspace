@@ -10,8 +10,13 @@ The headset can also hand tasks to these agents (desk card or "Brief the team").
 
 Python 3.8+ standard library only. Run:
 
-    python aim_bridge.py                 # http://127.0.0.1:8787  (headset over USB: adb reverse)
-    python aim_bridge.py --lan           # also reachable on Wi-Fi; non-local clients need the token
+    python aim_bridge.py                 # opens the pairing window; headset finds this PC on Wi-Fi
+    python aim_bridge.py --no-gui        # same, console only
+    python aim_bridge.py --local-only    # this PC only (headset over USB: adb reverse)
+
+The headset discovers this PC by itself (UDP broadcast) and pairs with the 6-digit code shown here, so
+there is no IP address, token or adb step. Other devices on the network cannot do anything without
+pairing. The same file also runs the agent commands: `aim_bridge hook`, `aim_bridge ask ...`, `aim_bridge mcp`.
 
 Open http://127.0.0.1:8787 for a browser dashboard (works without the headset).
 """
@@ -19,6 +24,8 @@ import argparse
 import json
 import os
 import secrets
+import socket
+import sys
 import threading
 import time
 import uuid
@@ -222,6 +229,82 @@ class State:
 STATE = State()
 TOKEN = ""
 LAN = False
+CODE = ""
+DISCOVERY_PORT = 8788
+OPEN_PATHS = ("/api/hello", "/api/pair")          # reachable without the token (pairing handshake)
+_fails = []                                       # timestamps of wrong pairing codes
+_fail_lock = threading.Lock()
+
+
+def _home():
+    d = os.path.join(os.path.expanduser("~"), ".aim")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _load_secret(name, make):
+    path = os.path.join(_home(), name)
+    if not os.path.exists(path):
+        with open(path, "w") as f:
+            f.write(make())
+    with open(path) as f:
+        return f.read().strip()
+
+
+def new_code():
+    """A fresh pairing code. Old pairings keep working unless you also reset the token."""
+    global CODE
+    CODE = "%06d" % secrets.randbelow(1000000)
+    with open(os.path.join(_home(), "pair_code"), "w") as f:
+        f.write(CODE)
+    return CODE
+
+
+def reset_pairing():
+    """Revokes every paired headset: new token and new code."""
+    global TOKEN
+    TOKEN = secrets.token_urlsafe(18)
+    with open(os.path.join(_home(), "token"), "w") as f:
+        f.write(TOKEN)
+    return new_code()
+
+
+def try_pair(code):
+    """Returns the token for the right code. Five wrong guesses lock pairing for one minute."""
+    t = now()
+    with _fail_lock:
+        _fails[:] = [x for x in _fails if t - x < 60]
+        if len(_fails) >= 5:
+            return None, "locked"
+        if secrets.compare_digest(str(code).strip(), CODE):
+            return TOKEN, ""
+        _fails.append(t)
+        return None, "wrong"
+
+
+def lan_name():
+    try:
+        return socket.gethostname()[:40]
+    except OSError:
+        return "PC"
+
+
+def discovery_loop(http_port):
+    """Answers the headset's UDP broadcast so it can find this PC without typing an address."""
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("", DISCOVERY_PORT))
+    except OSError:
+        return
+    while True:
+        try:
+            data, addr = sock.recvfrom(256)
+            if data.strip() == b"AIM?":
+                reply = {"aim": 1, "name": lan_name(), "port": http_port, "version": VERSION}
+                sock.sendto(json.dumps(reply).encode(), addr)
+        except OSError:
+            time.sleep(0.5)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -273,7 +356,7 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def _authorised(self):
-        if not LAN or self._local():
+        if not LAN or self._local() or urlparse(self.path).path.rstrip("/") in OPEN_PATHS:
             return True
         q = parse_qs(urlparse(self.path).query)
         given = self.headers.get("X-AIM-Token") or (q.get("token") or [""])[0]
@@ -291,6 +374,14 @@ class Handler(BaseHTTPRequestHandler):
             wait = min(float(q.get("wait", 0)), 120.0)
             if method == "GET" and path == "/":
                 return self._send(200, DASHBOARD.encode(), "text/html; charset=utf-8")
+            if method == "GET" and path == "/api/hello":
+                return self._send(200, {"aim": 1, "name": lan_name(), "version": VERSION})
+            if method == "POST" and path == "/api/pair":
+                token, why = try_pair(self._body().get("code", ""))
+                if token is None:
+                    return self._send(429 if why == "locked" else 403,
+                                      {"error": "too many wrong codes, wait a minute" if why == "locked" else "wrong code"})
+                return self._send(200, {"token": token, "name": lan_name()})
             if method == "GET" and path == "/api/health":
                 return self._send(200, {"ok": True, "version": VERSION})
             if method == "GET" and path == "/api/state":
@@ -391,35 +482,26 @@ load();setInterval(()=>{if(!document.activeElement||document.activeElement.tagNa
 </script></body></html>"""
 
 
-def main():
-    global TOKEN, LAN
-    ap = argparse.ArgumentParser(description="AI Manager Bridge")
-    ap.add_argument("--port", type=int, default=int(os.environ.get("AIM_PORT", 8787)))
-    ap.add_argument("--lan", action="store_true", help="listen on all interfaces (Quest over Wi-Fi); requires the token")
-    args = ap.parse_args()
-    LAN = args.lan
 
-    token_file = os.path.join(os.path.expanduser("~"), ".aim", "token")
-    os.makedirs(os.path.dirname(token_file), exist_ok=True)
-    if not os.path.exists(token_file):
-        with open(token_file, "w") as f:
-            f.write(secrets.token_urlsafe(18))
-    with open(token_file) as f:
-        TOKEN = f.read().strip()
 
-    host = "0.0.0.0" if LAN else "127.0.0.1"
-    server = ThreadingHTTPServer((host, args.port), Handler)
+def start_server(port, lan):
+    """Binds the HTTP server (and LAN discovery). Raises OSError if the port is taken."""
+    global TOKEN, LAN, CODE
+    LAN = lan
+    TOKEN = _load_secret("token", lambda: secrets.token_urlsafe(18))
+    CODE = _load_secret("pair_code", lambda: "%06d" % secrets.randbelow(1000000))
+    server = ThreadingHTTPServer(("0.0.0.0" if lan else "127.0.0.1", port), Handler)
     server.daemon_threads = True
-    print(f"AI Manager Bridge {VERSION} on http://127.0.0.1:{args.port}  (dashboard in your browser)")
-    if LAN:
-        print(f"LAN mode: Wi-Fi clients must send the token from {token_file}")
-    else:
-        print("Quest over USB:  adb reverse tcp:%d tcp:%d   (or Tools > AI Manager > Quest API Key > Connect bridge)" % (args.port, args.port))
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    if lan:
+        threading.Thread(target=discovery_loop, args=(port,), daemon=True).start()
+    return server
+
+
+def main():
+    import bridge_app
+    return bridge_app.main(sys.modules[__name__])
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

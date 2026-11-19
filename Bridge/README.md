@@ -5,11 +5,17 @@ its requests up to you, and waits for your decision: thumbs up, an answer, a cho
 "request changes". You can also hand tasks to these agents from VR, one at a time or as a whole
 team brief.
 
-Everything is Python standard library: nothing to install.
+**Setup takes about a minute and needs no IP address, no token and no cable:**
+
+1. On your PC, double-click **AIManagerBridge.exe** (or run `python Bridge/aim_bridge.py`). A window shows a 6-digit **pairing code**.
+2. In the headset: **Settings > Agent Bridge**. Your PC appears by itself (same Wi-Fi). Tap it and type the code. Done. The headset reconnects on its own from now on, even if the PC's address changes.
+3. In the bridge window click **Connect Claude Code**. Every Claude Code session now shows up as an agent named after its project folder, and its "Allow this command?" prompts walk up to your desk.
+
+Everything is Python standard library: nothing to install if you run from source.
 
 ```
  Claude Code ──hook/MCP──┐
- scripts / CI ──aim CLI──┼──►  aim_bridge.py (PC, :8787)  ◄──USB (adb reverse) or Wi-Fi──►  Quest app
+ scripts / CI ──aim CLI──┼──►  AI Manager Bridge (PC, :8787)  ◄── Wi-Fi: auto-discovery + pairing code ──►  Quest app
  aim worker (claude -p) ─┘           │
                                      └── browser dashboard: http://127.0.0.1:8787
 ```
@@ -29,24 +35,31 @@ quickly, with gestures, while you see who is busy, who is blocked, and what is n
 
 ## 1. Start the bridge
 
-```bash
-python Bridge/aim_bridge.py
-```
+Double-click `AIManagerBridge.exe` (build it with `Bridge/build_exe.ps1`, or let GitHub build it: see
+"Windows exe" below). From source: `python Bridge/aim_bridge.py`. Console only: add `--no-gui`.
+The dashboard at http://127.0.0.1:8787 lets you approve requests without the headset too.
 
-Or in Unity: **Tools > AI Manager > Quest API Key + Agent Bridge > Start bridge**.
-Open http://127.0.0.1:8787: the dashboard lets you approve requests without the headset too.
+If Windows asks about the firewall, choose **Allow** (private networks). The bridge listens on your
+Wi-Fi only so your headset can find it.
 
 ## 2. Connect the headset
 
-- **USB (simplest):** in the same Unity window, click **Connect headset (USB)**. This runs
-  `adb reverse tcp:8787 tcp:8787`, and it also runs automatically after every Android build.
-  Run it again after replugging the cable.
-- **Wi-Fi:** start the bridge with `python Bridge/aim_bridge.py --lan`. In the headset go to
-  **Settings > Bridge address** and enter your PC's IP (e.g. `192.168.1.20`). In LAN mode,
-  devices other than this PC must send the token from `~/.aim/token`.
+- **Wi-Fi (default):** Settings > Agent Bridge > tap your PC > type the pairing code shown on the PC.
+  Discovery is a UDP broadcast on port 8788. If your router isolates Wi-Fi clients (some guest
+  networks do), your PC will not appear: use Advanced > Address instead.
+- **USB (developers):** `python Bridge/aim_bridge.py --local-only`, then `adb reverse tcp:8787 tcp:8787`
+  (Unity: **Connect headset (USB)**, which also runs after every build). No pairing is needed over USB.
 
-Settings shows **BRIDGE CONNECTED** and how many agents are live. Live agents have a teal halo and
-a `LIVE` tag.
+Pairing details: the code is stored in `~/.aim/pair_code`, the token it hands out in `~/.aim/token`.
+Five wrong codes lock pairing for a minute. **New code (unpair all headsets)** in the window revokes every
+paired headset. Other devices on the network can do nothing without the token.
+
+Settings shows **CONNECTED** and how many agents are live. Live agents have a teal halo and a `LIVE` tag.
+
+### Windows exe
+`powershell -ExecutionPolicy Bypass -File Bridge/build_exe.ps1` builds `Bridge/dist/AIManagerBridge.exe`
+(needs python.org Python). Or push a git tag such as `bridge-v1.0`: the GitHub workflow in
+`.github/workflows/bridge-exe.yml` builds the exe and attaches it to the release.
 
 ## 3. Connect agents
 
@@ -91,7 +104,7 @@ Add this to `.claude/settings.json` in the project (use your own path to `aim.py
   of pages).
 
 **Security:** the bridge only accepts JSON requests from this PC (it rejects requests from web pages
-in your browser, and DNS-rebinding hosts). In `--lan` mode, every other device must send the token.
+in your browser, and DNS-rebinding hosts). Other devices on the network must pair first (6-digit code) and then send the token.
 
 ### Claude Code / Claude Desktop / any MCP client: manager tools (MCP)
 

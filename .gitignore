@@ -78,3 +78,10 @@ crashlytics-build.properties
 
 # Unity build temp
 .utmp/
+
+# Bridge build output
+Bridge/dist/
+Bridge/build/
+Bridge/.build-venv/
+Bridge/*.spec
+__pycache__/

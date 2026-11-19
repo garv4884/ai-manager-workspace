@@ -48,12 +48,13 @@ To test every provider without keys or cost: `python Bridge/mock_llm.py` runs a 
 
 ## Connect real agents (Agent Bridge)
 
-```
-python Bridge/aim_bridge.py          # server + dashboard on :8787
-adb reverse tcp:8787 tcp:8787        # lets the headset reach your PC
-```
+No IP address, token or cable needed:
 
-See [Bridge/README.md](Bridge/README.md) for the CLI, the Claude Code permission hook and the MCP server.
+1. On your PC run **AIManagerBridge.exe** (or `python Bridge/aim_bridge.py`). A window shows a 6-digit pairing code.
+2. In the headset open **Settings > Agent Bridge**, tap your PC (found automatically on the same Wi-Fi) and type the code.
+3. Click **Connect Claude Code** in the bridge window. Claude Code permission prompts now walk up to your desk in VR.
+
+Details, the CLI and the MCP server: [Bridge/README.md](Bridge/README.md). The exe is built by the GitHub workflow in `.github/workflows/bridge-exe.yml` (push a `bridge-v*` tag) or with `Bridge/build_exe.ps1`.
 
 ## Project layout
 
